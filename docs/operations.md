@@ -33,6 +33,12 @@ uv run python -m panbridge.worker
 - `PANBRIDGE_API_KEY`：API 鉴权密钥
 - `PANBRIDGE_SECRET_KEY`：凭据加密主密钥（多机共享时显式注入；本地单用户可省略，会自动生成到 `~/.config/panbridge/secret.key`）
 
+可选调优：
+
+- `PANBRIDGE_MAX_TASK_CONCURRENCY`：并发任务数（默认 4）
+- `PANBRIDGE_MAX_RETRY_ATTEMPTS`：失败重试次数（默认 3）
+- `PANBRIDGE_DOWNLOAD_RATE_LIMIT`：下载限速，字节/秒（默认 0 不限速）
+
 ## 数据与安全
 
 - 数据库：SQLite WAL（默认），可切换 PostgreSQL（`PANBRIDGE_DATABASE_URL`）

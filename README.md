@@ -2,15 +2,27 @@
 
 多网盘自动转存与下载后端服务。用户通过 HTTP API 提交网盘分享链接，服务自动识别平台、解析分享内容，并使用已配置的网盘账号完成转存与下载。
 
-第一版优先支持**夸克网盘**，已基于 [QuarkPan](https://github.com/lich0821/QuarkPan)（MIT）实现真实接入；同时提供完整可运行的 **Mock Provider**，可在无真实账号环境下验证任务生命周期。
+## 支持平台
+
+| 平台 | 登录方式 | 能力 | 验证状态 |
+|------|---------|------|---------|
+| 夸克网盘 | 扫码登录 | 解析 / 转存 / 下载 | ⚠️ 需真实账号做端到端验证 |
+| 阿里云盘 | refresh_token（手动） | 解析 / 预览（**无需登录**）/ 转存 / 下载 | ✅ 解析已真实验证 |
+| Mock | 无需 | 全链路（测试/演示） | ✅ 完整可用 |
+
+> 阿里云盘的「解析分享、预览文件列表」**无需登录**即可工作（已用真实公开
+> 分享验证）；只有「转存到自己网盘」需要 refresh_token。
+> 其余平台（123/UC/百度/115/迅雷）暂未接入，调研结论见
+> [docs/providers.md](docs/providers.md)。
 
 ## 特性
 
-- 自动识别网盘链接与提取码
+- 自动识别网盘链接与提取码（夸克/阿里/123/UC/百度/115/迅雷/天翼等域名）
 - 解析分享文件与目录
 - 使用已授权账号转存文件
-- 下载文件到本地（内置 HTTP 流式下载）
-- 持久化后台任务，支持状态查询、失败原因、取消与重试
+- 下载文件到本地（内置 HTTP 流式下载，支持限速、断点续传）
+- 持久化后台任务，支持状态查询、结果、失败原因、取消与重试
+- 并发任务执行（可配置 `max_task_concurrency`）
 - 统一 REST API（`/v1` 前缀），OpenAPI 文档
 - 不同网盘使用独立 Adapter，便于扩展
 - 账号凭据本地加密存储，不写死在代码中
@@ -71,6 +83,9 @@ uv run python -m panbridge.worker
 | `PANBRIDGE_DATABASE_URL` | 数据库连接 | `sqlite+aiosqlite:///./panbridge.db` |
 | `PANBRIDGE_DOWNLOAD_DIR` | 下载目录 | `./downloads` |
 | `PANBRIDGE_BIND_HOST` / `PANBRIDGE_BIND_PORT` | 监听地址 | `127.0.0.1` / `8000` |
+| `PANBRIDGE_MAX_TASK_CONCURRENCY` | 并发任务数 | `4` |
+| `PANBRIDGE_MAX_RETRY_ATTEMPTS` | 失败重试次数 | `3` |
+| `PANBRIDGE_DOWNLOAD_RATE_LIMIT` | 下载限速（字节/秒，0=不限） | `0` |
 
 > **主密钥自动生成**：本地单用户使用无需手工填写。首次运行会自动生成强随机
 > 密钥并保存到 `~/.config/panbridge/secret.key`（权限 0600，已加入 `.gitignore`）。
@@ -97,25 +112,46 @@ uv run panbridge auth logout
 > 也提供等价 REST API（`POST /v1/auth/qr/start` 等，为 AstrBot 集成预留），
 > 无需 WebUI，详见 [docs/api.md](docs/api.md)。
 
+## 阿里云盘（解析无需登录）
+
+阿里云盘的分享解析与文件预览**无需登录**，直接提交分享链接即可：
+
+```bash
+# 预览分享内容（无需账号）
+curl -X POST http://127.0.0.1:8000/v1/shares/inspect \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "https://www.alipan.com/s/MpYfsMSUdmk"}'
+```
+
+只有「转存到自己网盘」需要登录。阿里云盘当前支持手动提供
+`refresh_token`（通过 `POST /v1/accounts` 加密存储），扫码登录待后续优化。
+
 ## API 示例
 
 ```bash
 # 健康检查
 curl http://127.0.0.1:8000/health
 
-# 解析分享（Mock Provider）
+# 查看支持的平台
+curl http://127.0.0.1:8000/v1/providers
+
+# 解析分享（阿里云盘，无需登录）
 curl -X POST http://127.0.0.1:8000/v1/shares/inspect \
   -H 'Content-Type: application/json' \
-  -d '{"text": "https://mock.local/s/mock001 提取码: 1234"}'
+  -d '{"text": "https://www.alipan.com/s/MpYfsMSUdmk"}'
 
-# 创建转存任务
+# 创建转存+下载任务
 curl -X POST http://127.0.0.1:8000/v1/tasks \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: my-unique-key' \
-  -d '{"input": {"text": "https://mock.local/s/mock001", "action": "save", "account_id": "acc1"}}'
+  -d '{"input": {"text": "https://pan.quark.cn/s/xxxx", "action": "save_and_download", "account_id": "acc1"}}'
 
-# 查询任务
+# 查询任务（含 result：下载文件路径）
 curl http://127.0.0.1:8000/v1/tasks/{task_id}
+
+# 获取任务下载的文件列表 / 下载单个文件
+curl http://127.0.0.1:8000/v1/tasks/{task_id}/files
+curl -O http://127.0.0.1:8000/v1/tasks/{task_id}/files/{filename}
 ```
 
 完整 API 合约见 [docs/api.md](docs/api.md)。

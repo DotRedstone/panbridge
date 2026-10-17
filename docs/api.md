@@ -101,7 +101,17 @@
 
 ### `GET /v1/tasks/{task_id}`
 
-查询单个任务状态与结果。
+查询单个任务状态与结果。任务完成后 `result` 字段包含下载文件列表
+（`files: [{name, path, size}]`）或转存结果（`saved`、`destination`）。
+
+### `GET /v1/tasks/{task_id}/files`
+
+返回任务下载产出的文件列表（来自任务 `result.files`）。
+
+### `GET /v1/tasks/{task_id}/files/{filename}`
+
+下载任务产出的本地文件。文件名必须出现在任务 `result.files` 中，
+且文件路径受限于 `download_dir` 内（防止路径穿越）。
 
 ### `POST /v1/tasks/{task_id}/cancel`
 
