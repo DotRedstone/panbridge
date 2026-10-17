@@ -12,6 +12,10 @@ from panbridge.api.schemas import (
     ErrorResponse,
     InspectRequest,
     InspectResponse,
+    LoginStatusResponse,
+    LogoutResponse,
+    QrLoginStartResponse,
+    QrLoginStatusResponse,
     TaskCreateRequest,
     TaskListResponse,
     TaskResponse,
@@ -25,7 +29,11 @@ from panbridge.infrastructure.crypto import CredentialCipher
 from panbridge.persistence import task_to_dict
 
 
-def build_router(service: ApplicationService, settings: Settings) -> APIRouter:
+def build_router(
+    service: ApplicationService,
+    settings: Settings,
+    auth_service=None,
+) -> APIRouter:
     router = APIRouter()
     auth = require_api_key(settings)
 
@@ -131,6 +139,78 @@ def build_router(service: ApplicationService, settings: Settings) -> APIRouter:
             body.provider, body.label, encrypted
         )
         return _account_to_response(account)
+
+    # ---- 扫码登录（为 AstrBot 集成预留，无 WebUI）----
+
+    @router.post(
+        "/v1/auth/qr/start",
+        response_model=QrLoginStartResponse,
+    )
+    async def start_qr_login(
+        provider: str = "quark", _=Depends(auth)
+    ):
+        if auth_service is None:
+            raise DomainError(
+                ErrorCode.UNSUPPORTED_OPERATION,
+                "qr login not available (credential cipher not configured)",
+                retryable=False,
+            )
+        result = await auth_service.start_qr_login(provider)
+        return QrLoginStartResponse(**result)
+
+    @router.get(
+        "/v1/auth/qr/{session_id}",
+        response_model=QrLoginStatusResponse,
+    )
+    async def check_qr_login(session_id: str, _=Depends(auth)):
+        if auth_service is None:
+            raise DomainError(
+                ErrorCode.UNSUPPORTED_OPERATION,
+                "qr login not available (credential cipher not configured)",
+                retryable=False,
+            )
+        status = await auth_service.check_qr_login(session_id)
+        if status.get("status") == "success":
+            # 扫码成功，完成登录并返回账号
+            result = await auth_service.finish_qr_login(session_id)
+            account = await service.get_account(result["account_id"])
+            return QrLoginStatusResponse(
+                session_id=session_id,
+                status="success",
+                account_id=result["account_id"],
+                account=_account_to_response(account),
+            )
+        return QrLoginStatusResponse(
+            session_id=session_id,
+            status=status.get("status", "waiting"),
+        )
+
+    @router.get("/v1/auth/status", response_model=LoginStatusResponse)
+    async def login_status(provider: str = "quark", _=Depends(auth)):
+        if auth_service is None:
+            raise DomainError(
+                ErrorCode.UNSUPPORTED_OPERATION,
+                "auth not available (credential cipher not configured)",
+                retryable=False,
+            )
+        status = await auth_service.login_status(provider)
+        account = status.get("account")
+        return LoginStatusResponse(
+            logged_in=status.get("logged_in", False),
+            expired=status.get("expired", False),
+            account=_account_to_response(account) if account else None,
+        )
+
+    @router.post("/v1/auth/logout", response_model=LogoutResponse)
+    async def logout(provider: str = "quark", _=Depends(auth)):
+        if auth_service is None:
+            raise DomainError(
+                ErrorCode.UNSUPPORTED_OPERATION,
+                "auth not available (credential cipher not configured)",
+                retryable=False,
+            )
+        result = await auth_service.logout(provider)
+        return LogoutResponse(**result)
 
     return router
 

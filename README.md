@@ -48,28 +48,35 @@ nix develop
 | 变量 | 说明 | 默认 |
 |------|------|------|
 | `PANBRIDGE_API_KEY` | API 鉴权密钥（为空则本机免鉴权） | 空 |
-| `PANBRIDGE_SECRET_KEY` | 凭据加密主密钥（**必需**，添加账号/解密 Cookie 用） | 无 |
+| `PANBRIDGE_SECRET_KEY` | 凭据加密主密钥（**可选**，未设置时首次运行自动生成） | 自动生成 |
 | `PANBRIDGE_DATABASE_URL` | 数据库连接 | `sqlite+aiosqlite:///./panbridge.db` |
 | `PANBRIDGE_DOWNLOAD_DIR` | 下载目录 | `./downloads` |
 | `PANBRIDGE_BIND_HOST` / `PANBRIDGE_BIND_PORT` | 监听地址 | `127.0.0.1` / `8000` |
 
-生成主密钥：
+> **主密钥自动生成**：本地单用户使用无需手工填写。首次运行会自动生成强随机
+> 密钥并保存到 `~/.config/panbridge/secret.key`（权限 0600，已加入 `.gitignore`）。
+> 多进程/多机共享时再通过环境变量显式注入。
+
+## 夸克账号登录（扫码）
+
+夸克通过扫码登录，无需手动获取 Cookie：
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+# 1. 扫码登录（终端显示二维码，夸克 App 扫描后自动完成）
+uv run panbridge auth login
+
+# 2. 查询登录状态
+uv run panbridge auth status
+
+# 3. 退出登录（删除本地账号凭据）
+uv run panbridge auth logout
 ```
 
-## 配置夸克账号
+扫码成功后，Cookie 自动提取、验证并**加密持久化**到本地数据库，接入账号体系。
+后续运行自动加载已登录账号，不再要求手动填写 Cookie。凭据失效时会提示重新扫码。
 
-夸克通过 Cookie 认证。添加账号时 Cookie 会被加密存储，接口不返回明文：
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/accounts \
-  -H 'Content-Type: application/json' \
-  -d '{"provider": "quark", "label": "my-quark", "credential": "<你的Cookie>"}'
-```
-
-完整说明与人工验证步骤见 [docs/providers.md](docs/providers.md)。
+> 也提供等价 REST API（`POST /v1/auth/qr/start` 等，为 AstrBot 集成预留），
+> 无需 WebUI，详见 [docs/api.md](docs/api.md)。
 
 ## API 示例
 
@@ -103,16 +110,16 @@ uv run ruff check src tests
 
 ### 真实夸克端到端测试（可选，需要真实账号）
 
-本地一条命令跑通 `inspect → 转存 → 下载`，自动创建独立文件夹，不污染网盘根目录：
+先扫码登录，再一条命令跑通 `inspect → 转存 → 下载`，自动创建独立文件夹，不污染网盘根目录：
 
 ```bash
-cp scripts/quark.env.example .env.quark   # 填入 Cookie、主密钥、有效分享链接
-uv run python scripts/e2e_quark.py        # 一条命令完成端到端验证
+uv run panbridge auth login        # 终端扫码登录一次
+uv run python scripts/e2e_quark.py --share 'https://pan.quark.cn/s/xxxx 提取码: xxxx'
 ```
 
-- Cookie 只从本地 `.env.quark` 读取，**不会打印到日志**。
-- 默认自动创建独立文件夹转存；也可在 `.env.quark` 指定已有空文件夹 `PANBRIDGE_QUARK_DEST_FID`。
-- 只转存分享中的**第一个非目录文件**，不删除/覆盖账号原有内容。
+- 不再需要 `.env.quark` / Cookie / 主密钥——脚本直接读取已登录账号。
+- 默认自动创建独立文件夹转存，只转存分享中的**第一个非目录文件**，不删除/覆盖账号原有内容。
+- 凭据仅在内存中解密使用，不打印到日志。
 
 详见 [docs/providers.md](docs/providers.md)。
 

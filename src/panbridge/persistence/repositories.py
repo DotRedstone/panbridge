@@ -198,3 +198,20 @@ class AccountRepository:
             .all()
         )
         return [account_to_domain(r) for r in rows]
+
+    async def delete(self, account_id: str) -> None:
+        row = await self._session.get(AccountRow, account_id)
+        if row is not None:
+            await self._session.delete(row)
+            await self._session.flush()
+
+    async def get_default(self, provider: str) -> Account | None:
+        """返回指定 provider 最近创建的一个账号。"""
+        stmt = (
+            select(AccountRow)
+            .where(AccountRow.provider == provider)
+            .order_by(AccountRow.created_at.desc())
+            .limit(1)
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        return account_to_domain(row) if row else None

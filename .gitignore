@@ -17,6 +17,10 @@ venv/
 downloads/
 .part
 
+# 本地自动生成的密钥文件（含主密钥，绝不提交）
+secret.key
+*.secret.key
+
 # 测试与缓存
 .pytest_cache/
 .ruff_cache/

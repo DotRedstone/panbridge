@@ -215,6 +215,22 @@ class ApplicationService:
                 )
             return account
 
+    async def delete_account(self, account_id: str) -> None:
+        """删除账号（退出登录）。
+
+        账号不存在时静默返回（幂等），避免重复登出报错。
+        """
+        async with session_scope(self.sessionmaker) as session:
+            repo = AccountRepository(session)
+            if await repo.get(account_id) is None:
+                return
+            await repo.delete(account_id)
+
+    async def get_default_account(self, provider: str) -> Account | None:
+        """返回指定 provider 最近创建的一个账号（作为默认登录账号）。"""
+        async with session_scope(self.sessionmaker) as session:
+            return await AccountRepository(session).get_default(provider)
+
 
 def _new_task_id() -> str:
     import uuid

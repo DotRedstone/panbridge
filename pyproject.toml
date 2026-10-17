@@ -21,6 +21,7 @@ dependencies = [
     "greenlet>=3.0",
     "cryptography>=42",
     "python-multipart>=0.0.9",
+    "qrcode>=7.4",
     "quarkpan>=1.0.0",
 ]
 
@@ -30,6 +31,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
 ]
+
+[project.scripts]
+panbridge = "panbridge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

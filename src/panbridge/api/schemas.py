@@ -75,3 +75,27 @@ class AccountResponse(BaseModel):
     label: str
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class QrLoginStartResponse(BaseModel):
+    session_id: str
+    provider: str
+    qr_url: str
+
+
+class QrLoginStatusResponse(BaseModel):
+    session_id: str
+    status: str  # waiting | success | expired
+    account_id: str | None = None
+    account: AccountResponse | None = None
+
+
+class LoginStatusResponse(BaseModel):
+    logged_in: bool
+    expired: bool = False
+    account: AccountResponse | None = None
+
+
+class LogoutResponse(BaseModel):
+    provider: str
+    removed: int

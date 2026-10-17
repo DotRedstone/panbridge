@@ -12,6 +12,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from panbridge.api.router import build_router
+from panbridge.application.auth import QuarkQrAuthService
+from panbridge.application.auth_service import AuthService
 from panbridge.application.service import ApplicationService
 from panbridge.domain.errors import DomainError
 from panbridge.downloads.http import HttpDownloader
@@ -42,12 +44,17 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     registry = ProviderRegistry()
     registry.register(MockProvider())
     # 真实夸克 Provider 需要解密器解密账号 Cookie
+    # secret_key 已由 Settings.from_env 自动生成/加载，无需手工填写。
     cipher = CredentialCipher(settings.secret_key) if settings.secret_key else None
     registry.register(QuarkProvider(cipher=cipher))
 
     downloader = HttpDownloader()
 
     service = ApplicationService(registry, sessionmaker, downloader=downloader)
+
+    # 扫码登录认证（复用 QuarkPan 协议，隔离副作用）
+    qr_auth = QuarkQrAuthService(sessionmaker, cipher) if cipher else None
+    auth_service = AuthService(service, registry, qr_auth) if qr_auth else None
 
     worker = Worker(
         registry,
@@ -62,6 +69,8 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     app.state.settings = settings
     app.state.sessionmaker = sessionmaker
     app.state.worker = worker
+    app.state.auth_service = auth_service
+    app.state.cipher = cipher
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -80,7 +89,7 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
             },
         )
 
-    app.include_router(build_router(service, settings))
+    app.include_router(build_router(service, settings, auth_service))
 
     return app, worker
 

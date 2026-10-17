@@ -115,11 +115,42 @@
 
 账号列表 / 添加账号。账号凭据（Cookie）加密存储，接口不返回明文。
 
-添加账号前必须先配置 `PANBRIDGE_SECRET_KEY`（凭据加密主密钥），否则返回 `INTERNAL_ERROR`。生成方式：
+> 推荐改用扫码登录（见下方 `/v1/auth/*`），无需手动获取 Cookie 或配置主密钥。
 
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+## 认证（扫码登录）
+
+本地单用户首次运行会自动生成加密主密钥并持久化，无需手工填写。
+
+### `POST /v1/auth/qr/start`
+
+发起扫码登录，返回二维码 URL。
+
+请求：`?provider=quark`（默认）
+
+响应：
+```json
+{ "session_id": "abc...", "provider": "quark", "qr_url": "https://su.quark.cn/..." }
 ```
+
+### `GET /v1/auth/qr/{session_id}`
+
+轮询扫码状态。`status`：`waiting`（待扫码）→ `success`（已登录）→ `expired`（过期）。
+
+扫码成功时会自动完成换 Cookie、加密持久化，并返回账号信息。
+
+### `GET /v1/auth/status`
+
+查询当前登录状态：
+
+```json
+{ "logged_in": true, "expired": false, "account": { "id": "...", "provider": "quark", "label": "..." } }
+```
+
+凭据失效时 `expired=true`，应提示重新扫码（不会静默使用失效 Cookie）。
+
+### `POST /v1/auth/logout`
+
+退出登录，删除本地保存的账号凭据。
 
 ## 任务状态
 

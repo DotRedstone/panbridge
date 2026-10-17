@@ -21,12 +21,13 @@ uv run python -m panbridge.worker
 生产环境必须设置：
 
 - `PANBRIDGE_API_KEY`：API 鉴权密钥
-- `PANBRIDGE_SECRET_KEY`：凭据加密主密钥（强随机值）
+- `PANBRIDGE_SECRET_KEY`：凭据加密主密钥（多机共享时显式注入；本地单用户可省略，会自动生成到 `~/.config/panbridge/secret.key`）
 
 ## 数据与安全
 
 - 数据库：SQLite WAL（默认），可切换 PostgreSQL（`PANBRIDGE_DATABASE_URL`）
-- 凭据加密存储，主密钥外部注入
+- 凭据加密存储，主密钥本地自动生成（权限 0600）或外部注入
+- 扫码登录会话仅存内存，不落盘；明文 Cookie 只在内存中短暂存在
 - 默认监听 `127.0.0.1`，不自动开放公网端口
 - 遵守网盘服务条款：不实现验证码/风控/付费权限绕过，不做无限重试
 

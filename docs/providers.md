@@ -30,12 +30,32 @@
 
 | 方法 | 用途 | 备注 |
 |------|------|------|
-| `QuarkClient(cookies=..., auto_login=False)` | 用已有 Cookie 初始化 | 避免二维码登录 |
+| `APILogin.get_qr_code()` | 获取扫码登录二维码 token + URL | `uop.quark.cn/cas/ajax/getTokenForQrcodeLogin` |
+| `APILogin.check_login_status(qr_token)` | 单次查询扫码状态 | `getServiceTicketByQrcodeToken`，返回 `service_ticket` |
+| `QuarkClient(cookies=..., auto_login=False)` | 用已有 Cookie 初始化 | 扫码后换取的 Cookie |
 | `client.shares.get_share_token(share_id, password)` | 获取分享 `stoken` | `share/sharepage/token` |
 | `client.shares.get_share_info(share_id, token)` | 解析分享文件列表 | `share/sharepage/detail` |
 | `client.shares.save_shared_files(...)` | 转存 | `share/sharepage/save`，返回 `data.task_id` |
 | `client.get_download_url(file_id)` | 获取下载链接 | `file/download` |
 | `client.list_files(folder_id)` | 列出账号文件 | `file/sort` |
+
+### 扫码登录（复用与副作用隔离）
+
+夸克通过**扫码登录**获取 Cookie，不需要手动获取 Cookie。认证流程复用
+QuarkPan 的 `APILogin` 底层协议能力（`get_qr_code` + `check_login_status`），
+但**明确隔离其副作用**：
+
+| QuarkPan 原实现 | 副作用 | 本项目的处理 |
+|-----------------|--------|--------------|
+| `APILogin.login()` / `wait_for_login()` | `print`、倒计时线程、`time.sleep` 阻塞轮询 | **不复用**，改用 `asyncio.sleep` 异步轮询，不阻塞 HTTP |
+| `APILogin._save_login_result()` | 写 `login_result.json` / `user_info.json` 到 QuarkPan 配置目录（明文凭据） | **不复用** |
+| `APILogin._get_user_info_and_cookies()` | 用 service_ticket 请求 `/account/info` 换 Cookie，但写用户信息文件 | 等价网络行为自行实现（`AuthService._exchange_cookie`），**不写任何文件** |
+| `QuarkAuth._save_cookies()` | 明文 Cookie 写 `cookies.json` | **不复用**，凭据加密后入库 |
+
+换 Cookie 的流程：扫码成功 → `service_ticket` → 请求
+`pan.quark.cn/account/info?st=<ticket>&lw=scan` → 从响应 Set-Cookie 提取
+`quark.cn` 域名的 Cookie → 拼接为字符串 → **Fernet 加密**后存入
+`accounts` 表（复用 `AccountRepository`）。明文 Cookie 只在内存中短暂存在。
 
 ### 字段映射（夸克 → 领域）
 
@@ -70,44 +90,41 @@
 
 ### 人工验证步骤（有真实账号时）
 
-**推荐：使用本地端到端脚本**（自动完成 `inspect → save_and_download`，不打印 Cookie）：
+**推荐：扫码登录 + 本地端到端脚本**（自动完成 `inspect → save_and_download`，不打印 Cookie）：
 
 ```bash
-# 1. 复制配置模板，填入真实 Cookie、主密钥、有效分享链接
-cp scripts/quark.env.example .env.quark
-# 编辑 .env.quark（此文件已被 .gitignore 排除，切勿提交或发送）
+# 1. 终端扫码登录一次（自动保存账号，无需手动获取 Cookie）
+uv run panbridge auth login
 
-# 2. 运行脚本
-PYTHONPATH=src python scripts/e2e_quark.py
+# 2. 运行端到端脚本（自动读取已登录账号）
+uv run python scripts/e2e_quark.py --share 'https://pan.quark.cn/s/xxxx 提取码: xxxx'
 ```
 
-脚本会依次打印：账号校验 → 解析分享 → 转存下载 → 本地文件路径与大小。
-它只转存分享中的**第一个非目录文件**（小文件），转存到根目录（`destination="0"`），不删除或覆盖账号原有文件。
+脚本会依次打印：解析分享 → 转存下载 → 本地文件路径与大小。
+它只转存分享中的**第一个非目录文件**（小文件），转存到自动创建的独立文件夹，
+不删除或覆盖账号原有文件。
 
-**手动 API 方式**（等价）：
+**手动 API 方式**（等价，为 AstrBot 集成预留）：
 
-0. 生成并注入主密钥：
+1. 发起扫码登录，获取二维码 URL：
    ```bash
-   export PANBRIDGE_SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+   curl -X POST http://127.0.0.1:8000/v1/auth/qr/start
    ```
-1. 获取夸克 Cookie（浏览器登录 `pan.quark.cn` 后从开发者工具复制 Cookie）。
-2. 通过 API 添加账号（Cookie 会被加密存储）：
+2. 用手机夸克 App 扫描返回的 `qr_url` 对应二维码。
+3. 轮询登录状态（会自动完成换 Cookie + 加密入库）：
    ```bash
-   curl -X POST http://127.0.0.1:8000/v1/accounts \
-     -H 'Content-Type: application/json' \
-     -d '{"provider": "quark", "label": "my-quark", "credential": "<你的Cookie>"}'
+   curl http://127.0.0.1:8000/v1/auth/qr/{session_id}
    ```
-3. 解析一个真实分享：
+4. 查询登录状态 / 退出登录：
    ```bash
-   curl -X POST http://127.0.0.1:8000/v1/shares/inspect \
-     -H 'Content-Type: application/json' \
-     -d '{"text": "https://pan.quark.cn/s/xxxx 提取码: xxxx"}'
+   curl http://127.0.0.1:8000/v1/auth/status
+   curl -X POST http://127.0.0.1:8000/v1/auth/logout
    ```
-4. 转存 + 下载：
+5. 转存 + 下载（用登录返回的账号 ID）：
    ```bash
    curl -X POST http://127.0.0.1:8000/v1/tasks \
      -H 'Content-Type: application/json' \
-     -d '{"input": {"text": "https://pan.quark.cn/s/xxxx", "action": "save_and_download", "account_id": "<上一步返回的账号id>"}}'
+     -d '{"input": {"text": "https://pan.quark.cn/s/xxxx", "action": "save_and_download", "account_id": "<账号id>"}}'
    ```
 
 ## 新增 Provider 的规范

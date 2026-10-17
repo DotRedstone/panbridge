@@ -25,13 +25,17 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        # 主密钥优先环境变量；未配置时自动生成并持久化到用户目录，
+        # 本地单用户无需手工填写（见 infrastructure/secret_key.py）。
+        from panbridge.infrastructure.secret_key import load_or_create_secret_key
+
         return cls(
             api_key=os.environ.get("PANBRIDGE_API_KEY", ""),
             database_url=os.environ.get(
                 "PANBRIDGE_DATABASE_URL",
                 "sqlite+aiosqlite:///./panbridge.db",
             ),
-            secret_key=os.environ.get("PANBRIDGE_SECRET_KEY", ""),
+            secret_key=load_or_create_secret_key(),
             bind_host=os.environ.get("PANBRIDGE_BIND_HOST", "127.0.0.1"),
             bind_port=int(os.environ.get("PANBRIDGE_BIND_PORT", "8000")),
             download_dir=os.environ.get(
