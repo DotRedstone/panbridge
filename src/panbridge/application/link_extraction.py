@@ -63,6 +63,27 @@ _PLATFORM_PATTERNS: dict[str, tuple[set[str], Pattern[str]]] = {
         {"pan.xunlei.com"},
         re.compile(r"https?://pan\.xunlei\.com/s/[A-Za-z0-9_-]+"),
     ),
+    "lanzou": (
+        {
+            "lanzou.com",
+            "www.lanzou.com",
+            "lanzoui.com",
+            "www.lanzoui.com",
+            "lanzoux.com",
+            "lanzouw.com",
+            "lanzouy.com",
+            "lanzoub.com",
+            "lanzous.com",
+            "ilanzou.com",
+            "www.ilanzou.com",
+        },
+        # 蓝奏云短链路径为单段 key（如 /abc123 或 /iAbcDef），
+        # 非 /s/<id> 形式，故单独匹配。
+        re.compile(
+            r"https?://(?:www\.)?(?:lanzou|ilanzou)"
+            r"(?:i|x|w|y|b|s|p|o|q)?\.com/[A-Za-z0-9]{6,}"
+        ),
+    ),
     "mock": (
         {"mock.local", "pan.mock.cn"},
         re.compile(r"https?://(?:mock\.local|pan\.mock\.cn)/s/[A-Za-z0-9]+"),
@@ -135,6 +156,11 @@ def identify_provider(url: str) -> str:
 
 
 def _share_id_from_url(url: str) -> str:
+    # 蓝奏云：域名众多（lanzou/i/x/w/y/b/s 等子域名），且路径为单段 key，
+    # 直接把完整 URL 作为 share_id 传给 Provider，由它归一化。
+    if "lanzou" in url or "ilanzou" in url:
+        return url
+
     path = urlparse(url).path
     parts = [p for p in path.split("/") if p]
     if len(parts) >= 2 and parts[-2] == "s":

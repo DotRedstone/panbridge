@@ -85,3 +85,15 @@ def test_extract_xunlei_share():
     result = extract_share("https://pan.xunlei.com/s/abc")
     assert result.provider == "xunlei"
     assert result.share_id == "abc"
+
+
+def test_extract_lanzou_share():
+    result = extract_share("https://www.lanzou.com/abc123")
+    assert result.provider == "lanzou"
+    assert result.share_id == "https://www.lanzou.com/abc123"
+
+
+def test_extract_lanzou_subdomain_share():
+    result = extract_share("https://lanzoui.com/xyzabc")
+    assert result.provider == "lanzou"
+    assert result.share_id == "https://lanzoui.com/xyzabc"

@@ -1,0 +1,187 @@
+"""123 云盘 Provider 单元测试（mock httpx + 签名算法，不依赖网络）。"""
+
+from __future__ import annotations
+
+import pytest
+
+from panbridge.domain.errors import DomainError, ErrorCode
+from panbridge.providers.pan123.provider import (
+    Pan123Provider,
+    _sign_path,
+    _signed_url,
+)
+
+
+class _FakeResponse:
+    def __init__(self, status: int = 200, data: dict | None = None):
+        self.status_code = status
+        self._data = data or {}
+
+    def json(self):
+        return self._data
+
+
+class _FakeAsyncClient:
+    def __init__(self, routes: dict[str, _FakeResponse]):
+        self._routes = routes
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    async def get(self, url, params=None, headers=None):
+        for path, resp in self._routes.items():
+            if path in url:
+                return resp
+        return _FakeResponse(404, {"code": 404, "message": "not found"})
+
+    async def post(self, url, json=None, headers=None):
+        for path, resp in self._routes.items():
+            if path in url:
+                return resp
+        return _FakeResponse(404, {"code": 404, "message": "not found"})
+
+
+def test_sign_path_deterministic_shape():
+    key, value = _sign_path("/b/api/share/get")
+    # key 是 timeSign 十进制串
+    assert key.isdigit()
+    # value 是 <timestamp>-<random>-<dataSign>
+    parts = value.split("-")
+    assert len(parts) == 3
+    assert all(p.isdigit() for p in parts)
+
+
+def test_signed_url_appends_query():
+    url = _signed_url("https://yun.123pan.com/b/api/share/get")
+    assert "?" in url
+    assert url.startswith("https://yun.123pan.com/b/api/share/get?")
+
+
+@pytest.mark.asyncio
+async def test_inspect_share_maps_files(monkeypatch):
+    import panbridge.providers.pan123.provider as mod
+
+    routes = {
+        "/b/api/share/get": _FakeResponse(
+            200,
+            {
+                "code": 0,
+                "data": {
+                    "InfoList": [
+                        {
+                            "fileId": 1001,
+                            "filename": "a.zip",
+                            "type": 0,
+                            "size": 2048,
+                            "etag": "e1",
+                            "s3keyFlag": "f1",
+                        },
+                        {
+                            "fileId": 1002,
+                            "filename": "dir",
+                            "type": 1,
+                            "size": 0,
+                        },
+                    ]
+                },
+            },
+        )
+    }
+
+    def fake_client(*a, **k):
+        return _FakeAsyncClient(routes)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
+
+    p = Pan123Provider(cipher=None)
+    share = await p.inspect_share("abc123", None)
+    assert len(share.files) == 2
+    assert share.files[0].name == "a.zip"
+    assert share.files[0].is_dir is False
+    assert share.files[1].name == "dir"
+    assert share.files[1].is_dir is True
+
+
+@pytest.mark.asyncio
+async def test_inspect_share_invalid_password(monkeypatch):
+    import panbridge.providers.pan123.provider as mod
+
+    routes = {
+        "/b/api/share/get": _FakeResponse(
+            200, {"code": 500, "message": "提取码错误"}
+        )
+    }
+
+    def fake_client(*a, **k):
+        return _FakeAsyncClient(routes)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
+
+    p = Pan123Provider(cipher=None)
+    with pytest.raises(DomainError) as exc:
+        await p.inspect_share("abc123", "wrong")
+    assert exc.value.code == ErrorCode.INVALID_PASSWORD
+
+
+@pytest.mark.asyncio
+async def test_inspect_share_not_found(monkeypatch):
+    import panbridge.providers.pan123.provider as mod
+
+    routes = {
+        "/b/api/share/get": _FakeResponse(
+            200, {"code": 404, "message": "分享不存在"}
+        )
+    }
+
+    def fake_client(*a, **k):
+        return _FakeAsyncClient(routes)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
+
+    p = Pan123Provider(cipher=None)
+    with pytest.raises(DomainError) as exc:
+        await p.inspect_share("abc123", None)
+    assert exc.value.code == ErrorCode.INVALID_SHARE
+
+
+@pytest.mark.asyncio
+async def test_resolve_download_url_base64(monkeypatch):
+    import base64
+
+    import panbridge.providers.pan123.provider as mod
+
+    real_url = "https://download.cdn.example.com/file.zip"
+    encoded = base64.b64encode(real_url.encode()).decode()
+    routes = {
+        "/b/api/share/download/info": _FakeResponse(
+            200,
+            {
+                "code": 0,
+                "data": {
+                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                },
+            },
+        )
+    }
+
+    def fake_client(*a, **k):
+        return _FakeAsyncClient(routes)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
+
+    p = Pan123Provider(cipher=None)
+    url = await p.resolve_share_download_url(
+        "abc", None, {"fileId": 1001, "etag": "e", "s3keyFlag": "f", "size": 10}
+    )
+    assert url == real_url
+
+
+@pytest.mark.asyncio
+async def test_save_shared_files_unverified():
+    p = Pan123Provider(cipher=None)
+    with pytest.raises(DomainError) as exc:
+        await p.save_shared_files(None, "x", None, [], None, "skip")
+    assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION

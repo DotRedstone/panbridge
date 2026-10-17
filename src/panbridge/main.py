@@ -25,6 +25,12 @@ from panbridge.persistence import (
     init_db,
 )
 from panbridge.providers.aliyun.provider import AliyunProvider
+from panbridge.providers.baidu.provider import BaiduProvider
+from panbridge.providers.cloud189.provider import Cloud189Provider
+from panbridge.providers.lanzou.provider import LanzouProvider
+from panbridge.providers.pan115.provider import Pan115Provider
+from panbridge.providers.pan123.provider import Pan123Provider
+from panbridge.providers.pikpak.provider import PikPakProvider
 from panbridge.providers.quark.mock import MockProvider
 from panbridge.providers.quark.provider import QuarkProvider
 from panbridge.providers.registry import ProviderRegistry
@@ -50,6 +56,18 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     registry.register(QuarkProvider(cipher=cipher))
     # 阿里云盘：分享解析/直链下载无需登录，仅转存需要 refresh_token
     registry.register(AliyunProvider(cipher=cipher))
+    # 蓝奏云：匿名解析 + 直链下载，无需账号
+    registry.register(LanzouProvider())
+    # 123 云盘：匿名分享解析 + 直链下载，转存需账号
+    registry.register(Pan123Provider(cipher=cipher))
+    # 百度网盘：匿名解析分享列表，直链下载需 Cookie
+    registry.register(BaiduProvider(cipher=cipher))
+    # 115 网盘：匿名解析分享，转存/下载需 Cookie
+    registry.register(Pan115Provider(cipher=cipher))
+    # PikPak：匿名解析分享 + 直链下载，转存需账号
+    registry.register(PikPakProvider())
+    # 天翼云盘：账号文件列表 + 下载，分享解析需登录（未验证）
+    registry.register(Cloud189Provider(cipher=cipher))
 
     downloader = HttpDownloader(
         rate_limit=settings.download_rate_limit or None
