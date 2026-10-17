@@ -96,6 +96,16 @@ _PLATFORM_PATTERNS: dict[str, tuple[set[str], Pattern[str]]] = {
             r"(?:i|x|w|y|b|s|p|o|q)?\.com/[A-Za-z0-9]{6,}"
         ),
     ),
+    "guangya": (
+        {"www.guangyapan.com", "guangyapan.com"},
+        re.compile(r"https?://(?:www\.)?guangyapan\.com/s/[A-Za-z0-9_-]+"),
+    ),
+    "wukong": (
+        {"pan.wkbrowser.com", "wkbrowser.com"},
+        re.compile(
+            r"https?://(?:pan\.)?wkbrowser\.com/(?:s/|share/)?[A-Za-z0-9_-]+"
+        ),
+    ),
     "mock": (
         {"mock.local", "pan.mock.cn"},
         re.compile(r"https?://(?:mock\.local|pan\.mock\.cn)/s/[A-Za-z0-9]+"),
@@ -190,7 +200,7 @@ def _share_id_from_url(url: str) -> str:
 
     path = urlparse(url).path
     parts = [p for p in path.split("/") if p]
-    if len(parts) >= 2 and parts[-2] == "s":
+    if len(parts) >= 2 and parts[-2] in ("s", "share"):
         raw = parts[-1]
         # 123 网盘 share_id 尾部可能带 -密码 后缀，去掉它
         if "-" in raw:

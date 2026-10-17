@@ -28,6 +28,7 @@ from panbridge.providers.aliyun.provider import AliyunProvider
 from panbridge.providers.baidu.provider import BaiduProvider
 from panbridge.providers.caiyun.provider import CaiyunProvider
 from panbridge.providers.cloud189.provider import Cloud189Provider
+from panbridge.providers.guangya.provider import GuangyaProvider
 from panbridge.providers.lanzou.provider import LanzouProvider
 from panbridge.providers.pan115.provider import Pan115Provider
 from panbridge.providers.pan123.provider import Pan123Provider
@@ -37,6 +38,7 @@ from panbridge.providers.quark.provider import QuarkProvider
 from panbridge.providers.registry import ProviderRegistry
 from panbridge.providers.uc.provider import UcProvider
 from panbridge.providers.weiyun.provider import WeiyunProvider
+from panbridge.providers.wukong.provider import WukongProvider
 from panbridge.providers.xunlei.provider import XunleiProvider
 from panbridge.workers.worker import Worker
 
@@ -80,6 +82,10 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     registry.register(XunleiProvider(cipher=cipher))
     # 腾讯微云：匿名解析分享，转存/下载需 skey Cookie
     registry.register(WeiyunProvider(cipher=cipher))
+    # 光鸭云盘：匿名解析分享，转存/账号列表/下载需 access_token
+    registry.register(GuangyaProvider(cipher=cipher))
+    # 悟空网盘：匿名解析分享，转存/账号列表/下载需 Cookie 或 token
+    registry.register(WukongProvider(cipher=cipher))
 
     downloader = HttpDownloader(
         rate_limit=settings.download_rate_limit or None

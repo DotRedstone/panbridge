@@ -16,6 +16,8 @@
 | `uc` | UC 网盘 | ⚠️(需登录) | ⚠️(需登录) | ⚠️(需登录) | ✅ | Cookie | ⚠️ 协议+Mock |
 | `xunlei` | 迅雷云盘 | ⚠️(需登录) | ⚠️(需登录) | ⚠️(需登录) | ✅ | refresh_token | ⚠️ 协议+Mock |
 | `weiyun` | 腾讯微云 | ✅ | ⚠️(需登录) | ⚠️(需登录) | ✅(需登录) | skey Cookie | ⚠️ 协议+Mock |
+| `guangya` | 光鸭云盘 | ✅ | ⚠️(需登录) | ⚠️(需登录) | ✅(需登录) | access_token/refresh_token | ⚠️ 协议+Mock |
+| `wukong` | 悟空网盘 | ✅ | ⚠️(需登录) | ⚠️(需登录) | ✅(需登录) | Cookie/token | ⚠️ 协议+Mock |
 | `mock` | Mock | - | - | - | - | - | 测试用 |
 
 图例：✅ 已实现/可用；⚠️ 实现但需真实账号验证（或需登录）；❌ 平台不支持或未实现。
@@ -44,6 +46,8 @@
 | `uc` | 自研 HTTP Adapter | sharepage/v2/detail 取 stoken → sharepage/detail 列表 → sharepage/save 转存 → file/download 直链 | 真实分享解析/转存/下载 |
 | `xunlei` | 自研 HTTP Adapter | refresh_token + MD5链 captcha_sign → share 解析 → share/restore 转存 → files/{id} 直链 | 真实分享解析/转存/下载 |
 | `weiyun` | 自研 HTTP Adapter | WeiyunShareView(NoLogin) 解析 → WeiyunSharePartSaveData 转存 | 真实分享解析/转存 |
+| `guangya` | 自研 HTTP Adapter | access_token/refresh_token → /drive/v1/share 解析 → /drive/v1/share/restore 转存 → /drive/v1/files 列表 | 真实分享解析/转存/下载 |
+| `wukong` | 自研 HTTP Adapter | Cookie/token → /api/v1/share/info 解析 → /api/v1/share/save 转存 → /api/v1/file/download 直链 | 真实分享解析/转存/下载 |
 
 ### 基于成熟 SDK（MIT）
 
@@ -85,8 +89,7 @@
 
 | 平台 | 状态 |
 |------|---------|
-| 光鸭云盘 / 悟空网盘 | pan-relay(MIT) 已实现转存协议，可后续按需接入（本期未纳入目标） |
-| 联通云盘 | 同上，暂未纳入目标 |
+| 联通云盘 | pan-relay(MIT) 仅有链接测活、无转存协议，暂未纳入目标 |
 
 > 这些平台遵循「不伪造支持、不绕过验证码/风控」的原则，暂不实现空方法骨架。
 
