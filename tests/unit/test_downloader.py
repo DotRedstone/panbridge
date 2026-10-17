@@ -85,3 +85,37 @@ def test_http_downloader_writes_file(tmp_path, monkeypatch):
     assert not os.path.exists(dest + ".part")
     # 最后一条进度表示完成
     assert progress[-1].downloaded == progress[-1].total == 11
+
+
+def test_http_downloader_rate_limit_does_not_break(monkeypatch, tmp_path):
+    """限速下载仍能完整写出文件（不校验精确速率，只验证功能不回归）。"""
+    import panbridge.downloads.http as http_mod
+
+    fake = _FakeClient(_FakeStream([b"a", b"b", b"c"]))
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return fake
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr(http_mod.httpx, "AsyncClient", _FakeAsyncClient)
+
+    dest = str(tmp_path / "out.bin")
+    # 限速 100 字节/秒，3 字节会分 3 次 chunk，每次 sleep 0.01s
+    downloader = HttpDownloader(rate_limit=100)
+
+    async def run():
+        async for _ in downloader.download(
+            "https://download.example.com/f.bin", dest
+        ):
+            pass
+
+    asyncio.run(run())
+    assert os.path.exists(dest)
+    with open(dest, "rb") as f:
+        assert f.read() == b"abc"

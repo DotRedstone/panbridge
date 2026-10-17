@@ -22,6 +22,8 @@ class Settings:
     worker_lease_seconds: int = 300
     max_retry_attempts: int = 3
     allow_insecure_download: bool = False
+    # 下载限速（字节/秒），0 或负数表示不限速
+    download_rate_limit: int = 0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -49,6 +51,9 @@ class Settings:
             ),
             max_retry_attempts=int(
                 os.environ.get("PANBRIDGE_MAX_RETRY_ATTEMPTS", "3")
+            ),
+            download_rate_limit=int(
+                os.environ.get("PANBRIDGE_DOWNLOAD_RATE_LIMIT", "0")
             ),
         )
 

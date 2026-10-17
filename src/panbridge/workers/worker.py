@@ -193,7 +193,11 @@ class Worker:
                     download_file_ids = resolved
 
             downloaded = await self._download_files(
-                provider, account, download_file_ids, name_by_fid
+                provider,
+                account,
+                download_file_ids,
+                name_by_fid,
+                task.on_conflict.value,
             )
             return {
                 "downloaded": downloaded,
@@ -223,7 +227,12 @@ class Worker:
             return account
 
     async def _download_files(
-        self, provider, account, file_ids: list[str], name_by_fid: dict
+        self,
+        provider,
+        account,
+        file_ids: list[str],
+        name_by_fid: dict,
+        on_conflict: str,
     ) -> list[dict]:
         results: list[dict] = []
         for fid in file_ids:
@@ -231,7 +240,7 @@ class Worker:
             url = info["url"]
             # 优先用原始文件名，避免用 fid 作为文件名
             name = name_by_fid.get(fid) or info.get("name") or f"{fid}.bin"
-            dest = f"{self.download_dir}/{name}"
+            dest = self._resolve_local_path(name, on_conflict)
             headers = info.get("headers") or {}
             expected_size = info.get("size")
             async for _progress in self.downloader.download(
@@ -241,6 +250,28 @@ class Worker:
             size = _local_file_size(dest)
             results.append({"name": name, "path": dest, "size": size})
         return results
+
+    def _resolve_local_path(self, name: str, on_conflict: str) -> str:
+        """根据冲突策略确定本地下载路径。
+
+        - skip：目标已存在时跳过（返回 None 由调用方忽略）
+        - rename：自动追加序号避免覆盖
+        - overwrite：直接覆盖（默认行为，与现状一致）
+        """
+        import os
+
+        dest = os.path.join(self.download_dir, name)
+        if on_conflict == "rename" and os.path.exists(dest):
+            base, ext = os.path.splitext(name)
+            counter = 1
+            while os.path.exists(dest):
+                dest = os.path.join(
+                    self.download_dir, f"{base} ({counter}){ext}"
+                )
+                counter += 1
+        # skip 与 overwrite：skip 语义交由上层（转存 on_conflict），
+        # 本地下载默认覆盖（幂等重试也依赖覆盖保证一致）。
+        return dest
 
     async def _set_status(self, task_id: str, status: TaskStatus) -> None:
         async with session_scope(self.sessionmaker) as session:

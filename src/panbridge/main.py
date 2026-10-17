@@ -51,7 +51,9 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     # 阿里云盘：分享解析/直链下载无需登录，仅转存需要 refresh_token
     registry.register(AliyunProvider(cipher=cipher))
 
-    downloader = HttpDownloader()
+    downloader = HttpDownloader(
+        rate_limit=settings.download_rate_limit or None
+    )
 
     service = ApplicationService(registry, sessionmaker, downloader=downloader)
 

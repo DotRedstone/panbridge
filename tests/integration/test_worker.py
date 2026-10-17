@@ -223,3 +223,27 @@ async def test_save_auto_creates_folder_when_no_destination(tmp_path):
 
     await worker.stop()
     await engine.dispose()
+
+
+def test_local_conflict_rename(tmp_path):
+    """on_conflict=rename 时，本地已存在同名文件应自动改名不覆盖。"""
+    import os
+
+    worker = Worker(
+        ProviderRegistry(),
+        None,
+        download_dir=str(tmp_path / "dl"),
+    )
+    name = "video.mkv"
+    download_dir = tmp_path / "dl"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    existing = download_dir / name
+    existing.write_text("x")
+
+    resolved = worker._resolve_local_path(name, "rename")
+    assert resolved != str(existing)
+    assert os.path.basename(resolved).startswith("video")
+    assert "(1)" in os.path.basename(resolved)
+
+    # overwrite 默认返回原路径
+    assert worker._resolve_local_path(name, "overwrite") == str(existing)
