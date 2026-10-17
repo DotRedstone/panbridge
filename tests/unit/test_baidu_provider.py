@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from panbridge.domain.errors import DomainError, ErrorCode
+from panbridge.domain.models import Account
 from panbridge.providers.baidu.provider import BaiduProvider, decode_seckey
 
 
@@ -17,17 +18,24 @@ def test_decode_seckey_noop():
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, data: dict | None = None):
+    def __init__(self, status: int = 200, data: dict | None = None, text: str = ""):
         self.status_code = status
         self._data = data or {}
+        self.text = text
 
     def json(self):
         return self._data
 
 
+class _FakeCookieJar:
+    def __iter__(self):
+        return iter([])
+
+
 class _FakeAsyncClient:
     def __init__(self, routes: dict[str, _FakeResponse]):
         self._routes = routes
+        self.cookies = type("Cookies", (), {"jar": _FakeCookieJar()})()
 
     async def __aenter__(self):
         return self
@@ -125,8 +133,47 @@ async def test_inspect_share_invalid(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_save_shared_files_unverified():
+async def test_save_shared_files(monkeypatch):
+    routes = {
+        "/api/gettemplatevariable": _FakeResponse(
+            200, {"errno": 0, "data": {"bdstoken": "bt123"}}
+        ),
+        "/share/verify": _FakeResponse(200, {"errno": 0}),
+        "/share/transfer": _FakeResponse(
+            200, {"errno": 0, "data": {"task_id": "task-1"}}
+        ),
+        "/s/1abc123": _FakeResponse(
+            200,
+            {"errno": 0},
+            text='<html>"shareid":"100","share_uk":"200"</html>',
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+
+    p = BaiduProvider(cipher=_FakeCipher())
+    result = await p.save_shared_files(
+        _account(), "abc123", "1234", ["1", "2"], "/dest", "skip"
+    )
+    assert result.remote_task_id == "task-1"
+
+
+@pytest.mark.asyncio
+async def test_save_shared_files_requires_cookie():
     p = BaiduProvider(cipher=None)
+    acc = Account(id="a1", provider="baidu", label="t", encrypted_credential=None)
     with pytest.raises(DomainError) as exc:
-        await p.save_shared_files(None, "x", None, [], None, "skip")
-    assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION
+        await p.save_shared_files(acc, "x", None, ["1"], "/", "skip")
+    assert exc.value.code == ErrorCode.ACCOUNT_EXPIRED
+
+
+def _account():
+    from panbridge.domain.models import Account
+
+    return Account(
+        id="a1", provider="baidu", label="test", encrypted_credential="enc"
+    )
+
+
+class _FakeCipher:
+    def decrypt(self, token: str) -> str:
+        return "BDUSS=xyz; STOKEN=abc"

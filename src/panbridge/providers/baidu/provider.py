@@ -22,11 +22,15 @@ MIT 开源实现，代码为本项目独立编写）。不依赖第三方 SDK。
    body: encrypt=0&extra={"sekey":"<randsk>"}&fid_list=[<fs_id>]\
        &primaryid=<shareid>&uk=<uk>&product=share&type=nolimit
    → list[0].dlink
+5. 转存（需 Cookie）：
+   gettemplatevariable → bdstoken → share/verify 取 BDCLND(sekey)
+   → share/transfer?shareid=&from=&sekey=&bdstoken=
+   body: fsidlist=[...]&path=<dest>
 
 能力边界（如实声明）：
 - 「解析分享 + 文件列表」：匿名可用。
-- 「获取直链」：需 BDUSS Cookie（登录）。
-- 「转存」：需 Cookie，接口未验证，如实标注。
+- 「获取直链 / 转存」：需 BDUSS Cookie（登录），协议已实现但未经真实
+  账号验证。
 """
 
 from __future__ import annotations
@@ -70,6 +74,22 @@ def decode_seckey(seckey: str) -> str:
     return seckey.replace("-", "+").replace("~", "=").replace("_", "/")
 
 
+def _extract_js(page: str, key: str) -> str:
+    """从分享页内嵌 JS 中提取 `"key":"value"` 或 `"key":value`。"""
+    import re
+
+    m = re.search(r'"' + re.escape(key) + r'"\s*:\s*"?([^",}]+)"?', page)
+    return m.group(1) if m else ""
+
+
+def _extract_cookie(client: httpx.AsyncClient, name: str) -> str:
+    """从 client 的 cookie jar 中提取指定 cookie 值。"""
+    for c in client.cookies.jar:
+        if c.name == name:
+            return c.value
+    return ""
+
+
 class BaiduProvider(ShareProvider):
     name = "baidu"
     display_name = "百度网盘"
@@ -78,6 +98,8 @@ class BaiduProvider(ShareProvider):
             "inspect_share",
             "list_share_files",
             "get_download_info",
+            "save_shared_files",
+            "validate_account",
         }
     )
 
@@ -211,10 +233,122 @@ class BaiduProvider(ShareProvider):
         destination: str | None,
         on_conflict: str,
     ) -> TransferResult:
-        raise DomainError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            "baidu share saving requires cookie (not yet verified)",
+        """转存分享文件到账号网盘（需 BDUSS Cookie）。
+
+        协议（公开 web API）：
+        1. GET /api/gettemplatevariable?fields=[bdstoken] → bdstoken
+        2. POST /share/verify?surl=&pwd=&bdstoken= → 设置 BDCLND cookie（sekey）
+        3. POST /share/transfer?shareid=&from=&sekey=&bdstoken=...
+           body: fsidlist=[...]&path=<dest>
+        """
+        cookie = self._decrypt_credential(account)
+        surl = share_id if share_id.startswith("1") else "1" + share_id
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 1. 获取 bdstoken
+            resp = await client.get(
+                "https://pan.baidu.com/api/gettemplatevariable"
+                "?fields=[%22bdstoken%22]&clienttype=0&web=1",
+                headers={"User-Agent": _UA, "Cookie": cookie},
+            )
+            if resp.status_code != 200 or resp.json().get("errno") != 0:
+                raise DomainError(
+                    ErrorCode.ACCOUNT_EXPIRED,
+                    "baidu cookie invalid (cannot get bdstoken)",
+                )
+            bdstoken = resp.json()["data"]["bdstoken"]
+
+            # 2. verify 获取 sekey（BDCLND cookie）
+            verify_body = f"pwd={password or ''}&vcode=&vcodestr="
+            verify_resp = await client.post(
+                f"https://pan.baidu.com/share/verify?surl={surl}"
+                "&channel=chunlei&web=1&app_id=250528&clienttype=0"
+                f"&bdstoken={bdstoken}",
+                content=verify_body,
+                headers={
+                    "User-Agent": _UA,
+                    "Cookie": cookie,
+                    "Referer": f"https://pan.baidu.com/s/{surl}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            if verify_resp.status_code != 200:
+                raise self._map_wxlist_error(
+                    {
+                        "errno": -1,
+                        "show_msg": f"verify returned {verify_resp.status_code}",
+                    }
+                )
+            verify_data = verify_resp.json()
+            if verify_data.get("errno") != 0:
+                raise self._map_wxlist_error(verify_data)
+
+            # 从分享页提取 shareid / from(share_uk)
+            share_page = await client.get(
+                f"https://pan.baidu.com/s/{surl}",
+                headers={"User-Agent": _UA, "Cookie": cookie},
+            )
+            page = share_page.text
+            shareid = _extract_js(page, "shareid")
+            share_uk = _extract_js(page, "share_uk")
+            if not shareid or not share_uk:
+                raise DomainError(
+                    ErrorCode.INVALID_SHARE,
+                    "baidu: cannot extract shareid/share_uk from share page",
+                )
+
+            # sekey 来自 BDCLND cookie
+            sekey = _extract_cookie(client, "BDCLND")
+            if not sekey:
+                # 回退：用 verify 前的 sekey（来自 wxlist 的 seckey）
+                sekey = ""
+
+            # 3. 转存
+            ondup = "newcopy" if on_conflict == "rename" else "fail"
+            params = (
+                f"shareid={shareid}&from={share_uk}&sekey={urllib.parse.quote(sekey)}"
+                "&channel=chunlei&web=1&app_id=250528&clienttype=0"
+                f"&bdstoken={bdstoken}&ondup={ondup}&async=1"
+            )
+            fsidlist = "[" + ",".join(file_ids) + "]"
+            transfer_body = (
+                f"fsidlist={urllib.parse.quote(fsidlist)}"
+                f"&path={urllib.parse.quote(destination or '/')}"
+            )
+            transfer_resp = await client.post(
+                "https://pan.baidu.com/share/transfer?" + params,
+                content=transfer_body,
+                headers={
+                    "User-Agent": _UA,
+                    "Cookie": cookie,
+                    "Referer": f"https://pan.baidu.com/s/{surl}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            if transfer_resp.status_code != 200:
+                raise DomainError(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"baidu transfer returned {transfer_resp.status_code}",
+                    retryable=True,
+                )
+            transfer_data = transfer_resp.json()
+            if transfer_data.get("errno") != 0:
+                msg = str(transfer_data.get("show_msg", ""))
+                if "容量" in msg or "quota" in msg.lower():
+                    raise DomainError(ErrorCode.QUOTA_EXCEEDED, "baidu quota exceeded")
+                raise DomainError(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"baidu transfer error: {msg[:100]}",
+                    retryable=True,
+                )
+
+        task_data = transfer_data.get("data") or {}
+        task_id = (
+            task_data.get("task_id")
+            or transfer_data.get("task_id")
+            or transfer_data.get("extra", {}).get("task_id", "")
         )
+        return TransferResult(remote_task_id=str(task_id) if task_id else None)
 
     async def list_account_files(
         self, account: Account, parent_id: str | None = None
