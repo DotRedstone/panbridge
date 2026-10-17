@@ -153,3 +153,65 @@ def test_decrypt_with_wrong_key_raises(cipher):
 def test_cipher_rejects_empty_secret():
     with pytest.raises(ValueError):
         CredentialCipher("")
+
+
+class _FakeQuarkClient:
+    """mock QuarkClient：验证 resolve/get_download_info 的解析逻辑。"""
+
+    def __init__(self, files: list[dict], file_info: dict, download_url: str):
+        self._files = files
+        self._file_info = file_info
+        self._download_url = download_url
+
+    def list_files(self, folder_id: str = "0", **kwargs):
+        return {"data": {"list": self._files}}
+
+    def get_file_info(self, file_id: str):
+        return self._file_info
+
+    def get_download_url(self, file_id: str):
+        return self._download_url
+
+
+@pytest.mark.asyncio
+async def test_resolve_saved_file_ids_converts_dict(quark, cipher, monkeypatch):
+    """list_files 返回原始 dict，resolve 必须转换为 ShareFile 后匹配。"""
+    provider = QuarkProvider(cipher=cipher)
+    fake = _FakeQuarkClient(
+        files=[
+            {"fid": "new1", "file_name": "a.txt", "dir": False},
+            {"fid": "new2", "file_name": "b.txt", "dir": False},
+        ],
+        file_info={},
+        download_url="",
+    )
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    monkeypatch.setattr(provider, "_client_for", lambda a: fake)
+    resolved = await provider.resolve_saved_file_ids(acct, None, ["a.txt"])
+    assert resolved == ["new1"]
+
+
+@pytest.mark.asyncio
+async def test_get_download_info_reads_file_info_name(quark, cipher, monkeypatch):
+    """get_file_info 返回单个 dict，直接取 file_name。"""
+    provider = QuarkProvider(cipher=cipher)
+    fake = _FakeQuarkClient(
+        files=[],
+        file_info={"fid": "new1", "file_name": "real-name.bin"},
+        download_url="https://download.example.com/x",
+    )
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    monkeypatch.setattr(provider, "_client_for", lambda a: fake)
+    info = await provider.get_download_info(acct, "new1")
+    assert info["url"] == "https://download.example.com/x"
+    assert info["name"] == "real-name.bin"

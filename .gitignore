@@ -10,6 +10,7 @@ venv/
 
 # 运行数据与凭据
 .env
+.env.quark
 *.db
 *.db-wal
 *.db-shm

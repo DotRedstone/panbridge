@@ -178,7 +178,10 @@ class Worker:
             # 优先用原始文件名，避免用 fid 作为文件名
             name = name_by_fid.get(fid) or info.get("name") or f"{fid}.bin"
             dest = f"{self.download_dir}/{name}"
-            async for _progress in self.downloader.download(url, dest):
+            headers = info.get("headers") or {}
+            async for _progress in self.downloader.download(
+                url, dest, headers=headers
+            ):
                 pass
             results.append(dest)
         return results

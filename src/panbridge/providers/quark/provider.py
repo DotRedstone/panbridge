@@ -273,12 +273,14 @@ class QuarkProvider(ShareProvider):
         """
         client = self._client_for(account)
         try:
-            files = await self._run(
+            result = await self._run(
                 client, lambda: client.list_files(destination or "0")
             )
         except Exception as exc:  # noqa: BLE001
             raise self._map_quark_error(exc) from exc
 
+        # list_files 返回原始 dict，需先转换为 ShareFile
+        files = self._extract_files(result)
         name_set = set(names)
         resolved: list[str] = []
         for item in files:
@@ -317,17 +319,16 @@ class QuarkProvider(ShareProvider):
                 "quark returned empty download url",
                 retryable=True,
             )
-        # 尝试获取文件名（可选，失败不影响下载）
+        # 尝试获取文件名（可选，失败不影响下载）。
+        # QuarkPan 的 get_file_info 返回单个文件 dict（含 file_name），
+        # 而非 {"data": {"list": [...]}} 结构。
         name = f"{file_id}.bin"
         try:
             info = await self._run(
                 client, lambda: client.get_file_info(file_id)
             )
-            if isinstance(info, dict):
-                data = info.get("data", {})
-                items = data.get("list", []) if isinstance(data, dict) else []
-                if items:
-                    name = items[0].get("file_name", name)
+            if isinstance(info, dict) and info.get("file_name"):
+                name = info["file_name"]
         except Exception:  # noqa: BLE001
             pass
 
@@ -336,6 +337,16 @@ class QuarkProvider(ShareProvider):
             "name": name,
             "size": None,
             "checksum": None,
+            # 夸克 CDN 下载可能校验 Referer（QuarkPan 自带下载也带此头）。
+            # 注意：不含 Cookie——下载 URL 已带签名，且凭据不得外泄。
+            "headers": {
+                "Referer": "https://pan.quark.cn/",
+                "User-Agent": (
+                    "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/139.0.0.0 Mobile Safari/537.36"
+                ),
+            },
         }
 
     # ---- 解析辅助 ----

@@ -18,7 +18,7 @@ import tempfile
 
 from panbridge.application.service import ApplicationService, CreateTaskInput
 from panbridge.domain.enums import Action, TaskStatus
-from panbridge.downloads.http import HttpDownloader
+from panbridge.domain.models import Account
 from panbridge.infrastructure.crypto import CredentialCipher
 from panbridge.persistence import (
     AccountRepository,
@@ -27,7 +27,6 @@ from panbridge.persistence import (
     init_db,
     session_scope,
 )
-from panbridge.domain.models import Account
 from panbridge.providers.quark.mock import MockProvider
 from panbridge.providers.registry import ProviderRegistry
 from panbridge.workers.worker import Worker
