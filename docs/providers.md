@@ -65,6 +65,7 @@
 | [pan-relay](https://github.com/ucmao/pan-relay) | MIT | 仅参考协议 | ✅ 参考 UC/迅雷/移动云盘协议，代码独立编写 |
 | [netdisk-fast-download](https://github.com/qaiu/netdisk-fast-download) | MIT | 仅参考协议 | ✅ 参考蓝奏云/123/UC 协议思路，代码独立编写 |
 | [baidu-parse](https://github.com/xb18/baidu-parse) | MIT | 仅参考协议 | ✅ 参考百度 wxlist/sharedownload 协议，代码独立编写 |
+| [bddisk-shell](https://github.com/Cra1gTucker/bddisk-shell) | MIT | 仅参考协议 | ✅ 参考百度 share/transfer 转存协议，代码独立编写 |
 | [alist](https://github.com/alist-org/alist) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考 123/PikPak 协议思路 |
 | [OpenList](https://github.com/OpenListTeam/OpenList) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考微云驱动协议思路 |
 | [weiyun-sdk-go](https://github.com/foxxorcat/weiyun-sdk-go) | Apache-2.0 | 仅参考协议 | ✅ 参考微云账号文件操作协议（无分享解析/转存） |
