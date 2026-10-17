@@ -19,12 +19,11 @@ pan-relay（MIT 许可）的 `xunlei_client.py`，代码为本项目独立编写
    → restore_task_id
 5. 任务轮询：GET /drive/v1/tasks/{task_id} → progress==100
 6. 账号文件列表：GET /drive/v1/files?parent_id=&limit=
-7. 下载直链：GET /drive/v1/files/{file_id}?download（需另行解析 media）
+7. 下载直链：GET /drive/v1/files/{file_id} → web_content_link / medias[].link.url
 
 能力边界（如实声明）：
-- 「解析分享 / 转存 / 账号列表」需 refresh_token，协议已实现但未经真实
-  账号验证。
-- 「下载直链」端点未在参考实现中公开，暂标记 UNSUPPORTED_OPERATION。
+- 「解析分享 / 转存 / 账号列表 / 下载直链」需 refresh_token，协议已实现
+  但未经真实账号验证。
 """
 
 from __future__ import annotations
@@ -101,6 +100,7 @@ class XunleiProvider(ShareProvider):
             "save_shared_files",
             "list_account_files",
             "validate_account",
+            "get_download_info",
         }
     )
 
@@ -458,7 +458,30 @@ class XunleiProvider(ShareProvider):
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
-        raise DomainError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            "xunlei download link not supported (protocol not public)",
+        result = await self._request_pan(
+            account,
+            "GET",
+            f"{_API}/drive/v1/files/{file_id}",
+            action=f"GET:/drive/v1/files/{file_id}",
         )
+        if result.get("error_code"):
+            raise self._map_error(result, "download")
+        url = result.get("web_content_link") or ""
+        if not url:
+            for media in result.get("medias", []) or []:
+                if (media.get("link") or {}).get("url"):
+                    url = media["link"]["url"]
+                    break
+        if not url:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "xunlei returned empty download link",
+                retryable=True,
+            )
+        return {
+            "url": url,
+            "name": result.get("name"),
+            "size": int(result.get("size", 0)) if result.get("size") else None,
+            "checksum": result.get("sha1"),
+            "headers": {"User-Agent": _USER_AGENT},
+        }

@@ -21,11 +21,12 @@ pan-relay（MIT 许可）的 `uc_client.py` 及多个公开逆向实现，代码
    GET /1/clouddrive/file/sort?pdir_fid=&_page=&_size=
 6. 账号信息（校验登录态）：
    GET /1/clouddrive/member
+7. 下载直链：
+   POST /1/clouddrive/file/download body={fids:[fid]} → data[0].download_url
 
 能力边界（如实声明）：
-- 「解析分享 / 文件列表 / 转存 / 账号列表」需 Cookie，协议已实现但未经
-  真实账号验证。
-- 「下载直链」未在参考实现中公开，暂不支持（标记 UNSUPPORTED_OPERATION）。
+- 「解析分享 / 文件列表 / 转存 / 账号列表 / 下载直链」需 Cookie，协议已
+  实现但未经真实账号验证。
 """
 
 from __future__ import annotations
@@ -69,6 +70,7 @@ class UcProvider(ShareProvider):
             "save_shared_files",
             "list_account_files",
             "validate_account",
+            "get_download_info",
         }
     )
 
@@ -398,7 +400,43 @@ class UcProvider(ShareProvider):
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
-        raise DomainError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            "uc download link not supported (protocol not public)",
-        )
+        headers = self._headers(account)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                _API + "/1/clouddrive/file/download",
+                json={"fids": [file_id]},
+                params=_QUERY,
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                f"uc download returned {resp.status_code}",
+                retryable=True,
+            )
+        data = resp.json()
+        if data.get("status") != 200:
+            raise self._map_error(data, "download")
+        items = data.get("data") or []
+        if not items:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED, "uc returned empty download info"
+            )
+        url = items[0].get("download_url") or items[0].get("url")
+        if not url:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "uc returned empty download url",
+                retryable=True,
+            )
+        return {
+            "url": url,
+            "name": items[0].get("file_name") or items[0].get("name"),
+            "size": items[0].get("size"),
+            "checksum": None,
+            "headers": {
+                "Cookie": self._cookie(account),
+                "Referer": "https://drive.uc.cn/",
+                "User-Agent": _HEADERS["User-Agent"],
+            },
+        }

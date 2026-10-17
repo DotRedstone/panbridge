@@ -105,3 +105,9 @@ def test_extract_caiyun_share():
     )
     assert result.provider == "caiyun"
     assert result.share_id == "2qidFfUiQDtnx"
+
+
+def test_extract_weiyun_share():
+    result = extract_share("https://share.weiyun.com/abc123def")
+    assert result.provider == "weiyun"
+    assert result.share_id == "abc123def"

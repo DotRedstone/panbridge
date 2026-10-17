@@ -13,15 +13,16 @@
 | `pikpak` | PikPak | ✅ | ✅ | ⚠️(需账号) | ⚠️(需账号) | 无需登录(分享) | ✅ 协议+Mock |
 | `cloud189` | 天翼云盘 | ❌ | ❌ | ❌ | ✅ | 账号密码 | ⚠️ SDK 文件列表+Mock |
 | `caiyun` | 中国移动云盘 | ⚠️(需登录) | ❌ | ⚠️(需登录) | ✅ | Authorization(Basic) | ⚠️ 协议+Mock |
-| `uc` | UC 网盘 | ⚠️(需登录) | ❌ | ⚠️(需登录) | ✅ | Cookie | ⚠️ 协议+Mock |
-| `xunlei` | 迅雷云盘 | ⚠️(需登录) | ❌ | ⚠️(需登录) | ✅ | refresh_token | ⚠️ 协议+Mock |
+| `uc` | UC 网盘 | ⚠️(需登录) | ⚠️(需登录) | ⚠️(需登录) | ✅ | Cookie | ⚠️ 协议+Mock |
+| `xunlei` | 迅雷云盘 | ⚠️(需登录) | ⚠️(需登录) | ⚠️(需登录) | ✅ | refresh_token | ⚠️ 协议+Mock |
+| `weiyun` | 腾讯微云 | ✅ | ⚠️(需登录) | ⚠️(需登录) | ✅(需登录) | skey Cookie | ⚠️ 协议+Mock |
 | `mock` | Mock | - | - | - | - | - | 测试用 |
 
 图例：✅ 已实现/可用；⚠️ 实现但需真实账号验证（或需登录）；❌ 平台不支持或未实现。
 
 > 注：UC / 迅雷 / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
 > `INSPECT`（无账号）会返回 `ACTION_REQUIRED`；`SAVE` / `SAVE_AND_DOWNLOAD`
-> 流程会使用账号凭据完成解析+转存。
+> 流程会使用账号凭据完成解析+转存。微云「解析分享」匿名可用（NoLogin 路径）。
 
 ## 接入进度与验证状态（诚实声明）
 
@@ -40,8 +41,9 @@
 | `pikpak` | 自研 HTTP Adapter | MD5链 captcha_sign → share/detail 列表 → file_info 直链 | 真实分享解析/下载（需住宅 IP） |
 | `baidu` | 自研 HTTP Adapter | wxlist 匿名列表 → tplconfig 签名 → sharedownload 直链(需Cookie) | 真实分享解析 + Cookie 直链 |
 | `caiyun` | 自研 HTTP Adapter | AES-CBC 加密 + mcloud_sign 签名 → getOutLinkInfoV6 解析 → IBatchOprTask 转存 | 真实分享解析/转存/下载 |
-| `uc` | 自研 HTTP Adapter | sharepage/v2/detail 取 stoken → sharepage/detail 列表 → sharepage/save 转存 | 真实分享解析/转存 |
-| `xunlei` | 自研 HTTP Adapter | refresh_token + MD5链 captcha_sign → share 解析 → share/restore 转存 | 真实分享解析/转存 |
+| `uc` | 自研 HTTP Adapter | sharepage/v2/detail 取 stoken → sharepage/detail 列表 → sharepage/save 转存 → file/download 直链 | 真实分享解析/转存/下载 |
+| `xunlei` | 自研 HTTP Adapter | refresh_token + MD5链 captcha_sign → share 解析 → share/restore 转存 → files/{id} 直链 | 真实分享解析/转存/下载 |
+| `weiyun` | 自研 HTTP Adapter | WeiyunShareView(NoLogin) 解析 → WeiyunSharePartSaveData 转存 | 真实分享解析/转存 |
 
 ### 基于成熟 SDK（MIT）
 
@@ -66,6 +68,7 @@
 | [alist](https://github.com/alist-org/alist) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考 123/PikPak 协议思路 |
 | [OpenList](https://github.com/OpenListTeam/OpenList) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考微云驱动协议思路 |
 | [weiyun-sdk-go](https://github.com/foxxorcat/weiyun-sdk-go) | Apache-2.0 | 仅参考协议 | ✅ 参考微云账号文件操作协议（无分享解析/转存） |
+| [QuickSDK](https://gitee.com/ACANX/quick-sdk) | GPL-3.0 | **仅参考端点** | ⚠️ 不可复制代码，仅参考微云分享 API 端点与请求结构 |
 | [pikdirect](https://github.com/gordonhwc/pikdirect) | MIT | 仅参考协议 | ✅ 参考 PikPak captcha_sign 协议 |
 | [pikpakapi](https://github.com/Quan666/PikPakAPI) | GPL-3.0 | **不使用** | ❌ GPL 传染性，不可复制，仅参考协议思路 |
 | [quark-auto-save](https://github.com/Cp0204/quark-auto-save) | AGPL-3.0 | 仅参考思路 | ❌ 不可复制代码 |
@@ -77,13 +80,14 @@
 
 ## 未接入平台（阻塞原因）
 
-以下常见网盘当前**未实现**，原因如实记录：
+当前目标平台已全部接入。仍在评估中的平台：
 
-| 平台 | 阻塞原因 |
+| 平台 | 状态 |
 |------|---------|
-| 腾讯微云 | 分享解析/转存协议不公开。weiyun-sdk-go（Apache-2.0）仅支持账号文件列表/上传/下载（QQ 扫码登录），不含分享转存；无公开的微云分享解析协议实现可参考 |
+| 光鸭云盘 / 悟空网盘 | pan-relay(MIT) 已实现转存协议，可后续按需接入（本期未纳入目标） |
+| 联通云盘 | 同上，暂未纳入目标 |
 
-这些平台遵循「不伪造支持、不绕过验证码/风控」的原则，暂不实现空方法骨架。
+> 这些平台遵循「不伪造支持、不绕过验证码/风控」的原则，暂不实现空方法骨架。
 
 ## 新增 Provider 的规范
 

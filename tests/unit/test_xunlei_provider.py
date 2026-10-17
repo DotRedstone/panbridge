@@ -197,3 +197,43 @@ async def test_list_account_files(monkeypatch):
     files = await p.list_account_files(_account(), "")
     assert len(files) == 2
     assert files[1].is_dir is True
+
+
+@pytest.mark.asyncio
+async def test_get_download_info(monkeypatch):
+    routes = {
+        "/v1/auth/token": _FakeResponse(
+            200, {"data": {"access_token": "at", "expires_in": 7200}}
+        ),
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/files/f1": _FakeResponse(
+            200,
+            {"web_content_link": "https://cdn.xunlei.com/x", "name": "a.mkv"},
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = XunleiProvider(cipher=_FakeCipher())
+    info = await p.get_download_info(_account(), "f1")
+    assert info["url"] == "https://cdn.xunlei.com/x"
+    assert info["name"] == "a.mkv"
+
+
+@pytest.mark.asyncio
+async def test_get_download_info_via_medias(monkeypatch):
+    routes = {
+        "/v1/auth/token": _FakeResponse(
+            200, {"data": {"access_token": "at", "expires_in": 7200}}
+        ),
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/files/f1": _FakeResponse(
+            200,
+            {
+                "web_content_link": "",
+                "medias": [{"link": {"url": "https://cdn.xunlei.com/v.m3u8"}}],
+            },
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = XunleiProvider(cipher=_FakeCipher())
+    info = await p.get_download_info(_account(), "f1")
+    assert info["url"] == "https://cdn.xunlei.com/v.m3u8"

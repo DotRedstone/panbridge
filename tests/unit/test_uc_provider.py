@@ -184,3 +184,21 @@ async def test_list_account_files(monkeypatch):
 def test_extract_pwd_id():
     assert UcProvider._extract_pwd_id("/s/abc123") == "abc123"
     assert UcProvider._extract_pwd_id("https://drive.uc.cn/s/xyz") == "xyz"
+
+
+@pytest.mark.asyncio
+async def test_get_download_info(monkeypatch):
+    routes = {
+        "/file/download": _FakeResponse(
+            200,
+            {
+                "status": 200,
+                "data": [{"download_url": "https://cdn.uc.cn/x", "file_name": "a.txt"}],
+            },
+        )
+    }
+    _install_fake(monkeypatch, routes)
+    p = UcProvider(cipher=_FakeCipher())
+    info = await p.get_download_info(_account(), "f1")
+    assert info["url"] == "https://cdn.uc.cn/x"
+    assert info["name"] == "a.txt"

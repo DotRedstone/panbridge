@@ -36,6 +36,7 @@ from panbridge.providers.quark.mock import MockProvider
 from panbridge.providers.quark.provider import QuarkProvider
 from panbridge.providers.registry import ProviderRegistry
 from panbridge.providers.uc.provider import UcProvider
+from panbridge.providers.weiyun.provider import WeiyunProvider
 from panbridge.providers.xunlei.provider import XunleiProvider
 from panbridge.workers.worker import Worker
 
@@ -77,6 +78,8 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     registry.register(UcProvider(cipher=cipher))
     # 迅雷云盘：分享解析/转存/账号列表，需 refresh_token
     registry.register(XunleiProvider(cipher=cipher))
+    # 腾讯微云：匿名解析分享，转存/下载需 skey Cookie
+    registry.register(WeiyunProvider(cipher=cipher))
 
     downloader = HttpDownloader(
         rate_limit=settings.download_rate_limit or None
