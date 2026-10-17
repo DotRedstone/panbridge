@@ -231,6 +231,18 @@ class ApplicationService:
         async with session_scope(self.sessionmaker) as session:
             return await AccountRepository(session).get_default(provider)
 
+    # ---- Download results ----
+
+    async def get_task_files(self, task_id: str) -> list[dict[str, Any]]:
+        """返回任务下载产出的文件列表（来自任务 result）。
+
+        仅当任务动作包含下载且已完成时才有结果。
+        """
+        task = await self.get_task(task_id)
+        result = task.result or {}
+        files = result.get("files") or []
+        return [dict(f) for f in files]
+
 
 def _new_task_id() -> str:
     import uuid

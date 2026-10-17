@@ -35,6 +35,7 @@ def task_to_domain(row: TaskRow) -> Task:
         retryable=row.retryable,
         attempt=row.attempt,
         max_attempts=row.max_attempts,
+        result=json.loads(row.result) if row.result else None,
         lease_owner=row.lease_owner,
         lease_expires_at=row.lease_expires_at,
         created_at=row.created_at,
@@ -58,6 +59,7 @@ def task_to_dict(task: Task) -> dict[str, Any]:
         "retryable": task.retryable,
         "attempt": task.attempt,
         "max_attempts": task.max_attempts,
+        "result": task.result,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
         "completed_at": (
@@ -131,6 +133,7 @@ class TaskRepository:
         row.error_message = task.error_message
         row.retryable = task.retryable
         row.attempt = task.attempt
+        row.result = json.dumps(task.result) if task.result else None
         row.lease_owner = task.lease_owner
         row.lease_expires_at = task.lease_expires_at
         row.completed_at = task.completed_at

@@ -54,6 +54,7 @@ class TaskResponse(BaseModel):
     retryable: bool = False
     attempt: int = 0
     max_attempts: int = 3
+    result: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None
     completed_at: str | None = None
@@ -99,3 +100,13 @@ class LoginStatusResponse(BaseModel):
 class LogoutResponse(BaseModel):
     provider: str
     removed: int
+
+
+class TaskFileResponse(BaseModel):
+    name: str
+    path: str
+    size: int | None = None
+
+
+class TaskFilesResponse(BaseModel):
+    items: list[TaskFileResponse]

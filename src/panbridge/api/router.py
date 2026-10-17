@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 
 from panbridge.api.dependencies import require_api_key
 from panbridge.api.schemas import (
@@ -17,6 +19,8 @@ from panbridge.api.schemas import (
     QrLoginStartResponse,
     QrLoginStatusResponse,
     TaskCreateRequest,
+    TaskFileResponse,
+    TaskFilesResponse,
     TaskListResponse,
     TaskResponse,
 )
@@ -107,6 +111,40 @@ def build_router(
     async def get_task(task_id: str, _=Depends(auth)):
         task = await service.get_task(task_id)
         return TaskResponse(**task_to_dict(task))
+
+    @router.get(
+        "/v1/tasks/{task_id}/files", response_model=TaskFilesResponse
+    )
+    async def get_task_files(task_id: str, _=Depends(auth)):
+        files = await service.get_task_files(task_id)
+        return TaskFilesResponse(
+            items=[TaskFileResponse(**f) for f in files]
+        )
+
+    @router.get("/v1/tasks/{task_id}/files/{filename}")
+    async def download_task_file(
+        task_id: str, filename: str, _=Depends(auth)
+    ):
+        """下载任务产出的本地文件。
+
+        文件名仅允许出现在任务 result 中，且必须落在 download_dir 内，
+        防止路径穿越。
+        """
+        files = await service.get_task_files(task_id)
+        matched = [f for f in files if f.get("name") == filename]
+        if not matched:
+            raise HTTPException(status_code=404, detail="file not found")
+
+        download_dir = Path(settings.download_dir).resolve()
+        target = (download_dir / filename).resolve()
+        # 路径穿越防护：目标必须位于 download_dir 内
+        if download_dir not in target.parents:
+            raise HTTPException(status_code=403, detail="forbidden path")
+
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="file not found")
+
+        return FileResponse(str(target), filename=filename)
 
     @router.post("/v1/tasks/{task_id}/cancel", response_model=TaskResponse)
     async def cancel_task(task_id: str, _=Depends(auth)):

@@ -61,6 +61,7 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
         sessionmaker,
         lease_seconds=settings.worker_lease_seconds,
         max_attempts=settings.max_retry_attempts,
+        max_task_concurrency=settings.max_task_concurrency,
         downloader=downloader,
         download_dir=settings.download_dir,
     )

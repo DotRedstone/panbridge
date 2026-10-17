@@ -29,6 +29,7 @@ class Worker:
         worker_id: str = "worker-1",
         lease_seconds: int = 300,
         max_attempts: int = 3,
+        max_task_concurrency: int = 4,
         poll_interval: float = 1.0,
         downloader=None,
         download_dir: str = "./downloads",
@@ -38,23 +39,46 @@ class Worker:
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
+        self.max_task_concurrency = max_task_concurrency
         self.poll_interval = poll_interval
         self.downloader = downloader
         self.download_dir = download_dir
         self._running = False
 
     async def run(self) -> None:
-        """主循环：领取并执行任务，直到被停止。"""
+        """主循环：并发领取并执行任务，直到被停止。
+
+        使用 `max_task_concurrency` 限制同时执行的任务数，
+        避免单个 Worker 无限并发占用资源。
+        """
         self._running = True
+        tasks: set[asyncio.Task] = set()
         while self._running:
             try:
-                task = await self._claim()
-                if task is None:
+                # 补充到并发上限
+                while len(tasks) < self.max_task_concurrency:
+                    task = await self._claim()
+                    if task is None:
+                        break
+                    tasks.add(asyncio.create_task(self._execute(task)))
+
+                if not tasks:
                     await asyncio.sleep(self.poll_interval)
                     continue
-                await self._execute(task)
+
+                done, pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                tasks = pending
+                for t in done:
+                    if t.exception() is not None:
+                        logger.exception(
+                            "worker task raised: %s", t.exception()
+                        )
             except asyncio.CancelledError:
                 logger.info("worker %s cancelled", self.worker_id)
+                for t in tasks:
+                    t.cancel()
                 raise
             except Exception:
                 logger.exception("worker loop error")
@@ -171,7 +195,13 @@ class Worker:
             downloaded = await self._download_files(
                 provider, account, download_file_ids, name_by_fid
             )
-            return {"downloaded": downloaded}
+            return {
+                "downloaded": downloaded,
+                "files": [
+                    {"name": d["name"], "path": d["path"], "size": d["size"]}
+                    for d in downloaded
+                ],
+            }
 
         return {}
 
@@ -194,8 +224,8 @@ class Worker:
 
     async def _download_files(
         self, provider, account, file_ids: list[str], name_by_fid: dict
-    ) -> list[str]:
-        results = []
+    ) -> list[dict]:
+        results: list[dict] = []
         for fid in file_ids:
             info = await provider.get_download_info(account, fid)
             url = info["url"]
@@ -203,11 +233,13 @@ class Worker:
             name = name_by_fid.get(fid) or info.get("name") or f"{fid}.bin"
             dest = f"{self.download_dir}/{name}"
             headers = info.get("headers") or {}
+            expected_size = info.get("size")
             async for _progress in self.downloader.download(
-                url, dest, headers=headers
+                url, dest, headers=headers, expected_size=expected_size
             ):
                 pass
-            results.append(dest)
+            size = _local_file_size(dest)
+            results.append({"name": name, "path": dest, "size": size})
         return results
 
     async def _set_status(self, task_id: str, status: TaskStatus) -> None:
@@ -227,6 +259,7 @@ class Worker:
             if task.status == TaskStatus.CANCELLED:
                 return
             task.status = TaskStatus.COMPLETED
+            task.result = result
             task.completed_at = datetime.now(UTC)
             task.lease_owner = None
             task.lease_expires_at = None
@@ -238,9 +271,10 @@ class Worker:
             task = await repo.get(task_id)
             if task is None or task.status == TaskStatus.CANCELLED:
                 return
-            if exc.retryable and task.attempt < task.max_attempts:
-                task.status = TaskStatus.RETRYING
-                # 归还队列
+            # attempt 在 claim_next 时已自增，重试判定应基于「是否还有剩余次数」。
+            can_retry = exc.retryable and task.attempt < task.max_attempts
+            if can_retry:
+                # 归还队列等待重试；保留错误信息供排查。
                 task.status = TaskStatus.QUEUED
             else:
                 task.status = TaskStatus.FAILED
@@ -254,3 +288,13 @@ class Worker:
 
     async def stop(self) -> None:
         self._running = False
+
+
+def _local_file_size(path: str) -> int | None:
+    """返回本地文件大小（字节），文件不存在返回 None。"""
+    import os
+
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None

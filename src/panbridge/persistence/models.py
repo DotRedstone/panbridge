@@ -67,6 +67,8 @@ class TaskRow(Base):
     retryable: Mapped[bool] = mapped_column(Boolean, default=False)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    # 任务最终结果（JSON 字符串），如已下载文件路径、转存结果等。
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Worker 租约与心跳
     lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(

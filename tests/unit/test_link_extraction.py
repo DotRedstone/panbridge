@@ -47,3 +47,41 @@ def test_empty_text_raises():
     with pytest.raises(DomainError) as exc:
         extract_share("")
     assert exc.value.code == ErrorCode.INVALID_SHARE
+
+
+def test_extract_123pan_with_dash_password():
+    result = extract_share("https://www.123pan.com/s/abc-1234")
+    assert result.provider == "123"
+    assert result.share_id == "abc"
+    assert result.password == "1234"
+
+
+def test_extract_aliyun_share():
+    result = extract_share("https://www.alipan.com/s/abc123")
+    assert result.provider == "aliyun"
+    assert result.share_id == "abc123"
+
+
+def test_extract_uc_share():
+    result = extract_share("https://drive.uc.cn/s/abc")
+    assert result.provider == "uc"
+    assert result.share_id == "abc"
+
+
+def test_extract_baidu_share_with_pwd_param():
+    result = extract_share("https://pan.baidu.com/s/abc?pwd=1234")
+    assert result.provider == "baidu"
+    assert result.share_id == "abc"
+    assert result.password == "1234"
+
+
+def test_extract_115_share():
+    result = extract_share("https://115.com/s/abc")
+    assert result.provider == "115"
+    assert result.share_id == "abc"
+
+
+def test_extract_xunlei_share():
+    result = extract_share("https://pan.xunlei.com/s/abc")
+    assert result.provider == "xunlei"
+    assert result.share_id == "abc"

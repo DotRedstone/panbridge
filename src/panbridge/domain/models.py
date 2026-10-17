@@ -103,6 +103,8 @@ class Task:
     retryable: bool = False
     attempt: int = 0
     max_attempts: int = 3
+    # 任务最终结果（JSON 序列化），如已下载文件路径、转存结果等。
+    result: dict[str, Any] | None = None
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
     created_at: datetime | None = None
