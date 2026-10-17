@@ -12,6 +12,7 @@
 | `115` | 115 网盘 | ✅ | ⚠️(需Cookie) | ⚠️(需Cookie) | ✅(需Cookie) | Cookie | ✅ 匿名解析+Mock |
 | `pikpak` | PikPak | ✅ | ✅ | ⚠️(需账号) | ⚠️(需账号) | 无需登录(分享) | ✅ 协议+Mock |
 | `cloud189` | 天翼云盘 | ❌ | ❌ | ❌ | ✅ | 账号密码 | ⚠️ SDK 文件列表+Mock |
+| `caiyun` | 中国移动云盘 | ❌ | ❌ | ❌ | ✅ | Authorization(Basic) | ⚠️ 文件列表+Mock |
 | `mock` | Mock | - | - | - | - | - | 测试用 |
 
 图例：✅ 已实现/可用；⚠️ 实现但需真实账号验证；❌ 平台不支持或未实现。
@@ -41,6 +42,7 @@
 | `aliyun` | aligo | 分享解析/转存/下载 | 转存/refresh_token 登录 |
 | `115` | p115client | 分享解析(匿名)/转存/下载/文件列表 | 转存/下载端到端 |
 | `cloud189` | cloud189 | 账号文件列表/下载 | 分享解析(不支持) |
+| `caiyun` | 自研 HTTP Adapter | 账号文件列表/下载 | 分享解析(未验证) |
 
 ## 参考项目评估与许可证合规
 
@@ -71,7 +73,6 @@
 | UC 网盘 | 必须登录 Cookie 才能解析（netdisk-fast-download 确认），协议端点未公开、无成熟 SDK，且需短信验证码等特殊认证，无法匿名或离线验证 |
 | 迅雷云盘 | 需账号登录（密码/短信），`api-pan.xunlei.com` 端点未公开、协议不稳定，无成熟 Python SDK |
 | 腾讯微云 | 仅有 2015 年老协议（weiyun-api，MIT）与需 Token 的 MCP 实现，分享解析/转存协议不公开 |
-| 中国移动云盘（和彩云） | 需 Authorization（Basic token），分享页走独立 `caiyun.139.com` 通道，协议未公开、需短信验证码 |
 
 这些平台遵循「不伪造支持、不绕过验证码/风控」的原则，暂不实现空方法骨架。
 

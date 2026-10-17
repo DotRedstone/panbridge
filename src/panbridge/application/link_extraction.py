@@ -63,6 +63,14 @@ _PLATFORM_PATTERNS: dict[str, tuple[set[str], Pattern[str]]] = {
         {"pan.xunlei.com"},
         re.compile(r"https?://pan\.xunlei\.com/s/[A-Za-z0-9_-]+"),
     ),
+    "caiyun": (
+        {"yun.139.com", "caiyun.139.com", "www.caiyun.139.com"},
+        # 移动云盘分享链接：https://yun.139.com/shareweb/#/w/i/<linkID>
+        re.compile(
+            r"https?://(?:www\.)?(?:yun|caiyun)\.139\.com/shareweb/?"
+            r"(?:#/)?w/i/[A-Za-z0-9]+"
+        ),
+    ),
     "lanzou": (
         {
             "lanzou.com",
@@ -160,6 +168,13 @@ def _share_id_from_url(url: str) -> str:
     # 直接把完整 URL 作为 share_id 传给 Provider，由它归一化。
     if "lanzou" in url or "ilanzou" in url:
         return url
+
+    # 移动云盘：/shareweb/#/w/i/<linkID>，提取 linkID
+    if "139.com/shareweb" in url:
+        m = re.search(r"/w/i/([A-Za-z0-9]+)", url)
+        if m:
+            return m.group(1)
+        raise DomainError(ErrorCode.INVALID_SHARE, "malformed caiyun share URL")
 
     path = urlparse(url).path
     parts = [p for p in path.split("/") if p]

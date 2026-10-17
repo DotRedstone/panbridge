@@ -97,3 +97,11 @@ def test_extract_lanzou_subdomain_share():
     result = extract_share("https://lanzoui.com/xyzabc")
     assert result.provider == "lanzou"
     assert result.share_id == "https://lanzoui.com/xyzabc"
+
+
+def test_extract_caiyun_share():
+    result = extract_share(
+        "https://yun.139.com/shareweb/#/w/i/2qidFfUiQDtnx"
+    )
+    assert result.provider == "caiyun"
+    assert result.share_id == "2qidFfUiQDtnx"

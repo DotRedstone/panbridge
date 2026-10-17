@@ -26,6 +26,7 @@ from panbridge.persistence import (
 )
 from panbridge.providers.aliyun.provider import AliyunProvider
 from panbridge.providers.baidu.provider import BaiduProvider
+from panbridge.providers.caiyun.provider import CaiyunProvider
 from panbridge.providers.cloud189.provider import Cloud189Provider
 from panbridge.providers.lanzou.provider import LanzouProvider
 from panbridge.providers.pan115.provider import Pan115Provider
@@ -68,6 +69,8 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     registry.register(PikPakProvider())
     # 天翼云盘：账号文件列表 + 下载，分享解析需登录（未验证）
     registry.register(Cloud189Provider(cipher=cipher))
+    # 中国移动云盘：账号文件列表 + 下载，分享解析未验证
+    registry.register(CaiyunProvider(cipher=cipher))
 
     downloader = HttpDownloader(
         rate_limit=settings.download_rate_limit or None
