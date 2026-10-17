@@ -134,7 +134,11 @@ class BaiduProvider(ShareProvider):
     @staticmethod
     def _map_wxlist_error(data: dict[str, Any]) -> DomainError:
         errno = data.get("errno", 0)
-        msg = str(data.get("show_msg", ""))
+        msg = str(
+            data.get("show_msg", "")
+            or data.get("errmsg", "")
+            or data.get("err_msg", "")
+        )
         # 常见 errno：-12 提取码错误，2/-7 分享不存在/已失效
         if errno in (-12, 105) or "提取码" in msg or "密码" in msg:
             return DomainError(
@@ -147,6 +151,13 @@ class BaiduProvider(ShareProvider):
             or "已删除" in msg
         ):
             return DomainError(ErrorCode.INVALID_SHARE, "baidu share invalid")
+        # 9019 need verify：百度风控，需验证码/滑块，非协议错误
+        if errno == 9019 or "verify" in msg.lower() or "验证" in msg:
+            return DomainError(
+                ErrorCode.ACTION_REQUIRED,
+                "baidu requires verification (risk control)",
+                retryable=False,
+            )
         return DomainError(
             ErrorCode.INTERNAL_ERROR,
             f"baidu wxlist error: errno={errno} {msg[:100]}",

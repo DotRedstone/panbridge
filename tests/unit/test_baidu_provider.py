@@ -257,3 +257,13 @@ async def test_resolve_saved_file_ids(monkeypatch):
         _account(), "/dest", ["a.txt", "missing.txt"]
     )
     assert resolved == ["101"]
+
+
+def test_map_error_verify_risk_control():
+    err = BaiduProvider._map_wxlist_error({"errno": 9019, "errmsg": "need verify"})
+    assert err.code == ErrorCode.ACTION_REQUIRED
+
+
+def test_map_error_password_errno():
+    err = BaiduProvider._map_wxlist_error({"errno": -12, "errmsg": "提取码错误"})
+    assert err.code == ErrorCode.INVALID_PASSWORD
