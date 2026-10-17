@@ -24,8 +24,8 @@ dependencies = [
     "qrcode>=7.4",
     "quarkpan>=1.0.0",
     "aligo>=6.0",
-    "p115client>=0.0.4",
-    "cloud189>=1.0.0",
+    "p115client>=0.0.9",
+    "cloud189>=0.1.6",
 ]
 
 [project.optional-dependencies]
