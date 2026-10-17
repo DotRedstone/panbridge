@@ -35,6 +35,8 @@ from panbridge.providers.pikpak.provider import PikPakProvider
 from panbridge.providers.quark.mock import MockProvider
 from panbridge.providers.quark.provider import QuarkProvider
 from panbridge.providers.registry import ProviderRegistry
+from panbridge.providers.uc.provider import UcProvider
+from panbridge.providers.xunlei.provider import XunleiProvider
 from panbridge.workers.worker import Worker
 
 logging.basicConfig(
@@ -69,8 +71,12 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     registry.register(PikPakProvider())
     # 天翼云盘：账号文件列表 + 下载，分享解析需登录（未验证）
     registry.register(Cloud189Provider(cipher=cipher))
-    # 中国移动云盘：账号文件列表 + 下载，分享解析未验证
+    # 中国移动云盘：分享解析/转存/账号列表，需 Authorization
     registry.register(CaiyunProvider(cipher=cipher))
+    # UC 网盘：分享解析/转存/账号列表，需 Cookie
+    registry.register(UcProvider(cipher=cipher))
+    # 迅雷云盘：分享解析/转存/账号列表，需 refresh_token
+    registry.register(XunleiProvider(cipher=cipher))
 
     downloader = HttpDownloader(
         rate_limit=settings.download_rate_limit or None

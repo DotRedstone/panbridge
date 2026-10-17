@@ -12,10 +12,16 @@
 | `115` | 115 网盘 | ✅ | ⚠️(需Cookie) | ⚠️(需Cookie) | ✅(需Cookie) | Cookie | ✅ 匿名解析+Mock |
 | `pikpak` | PikPak | ✅ | ✅ | ⚠️(需账号) | ⚠️(需账号) | 无需登录(分享) | ✅ 协议+Mock |
 | `cloud189` | 天翼云盘 | ❌ | ❌ | ❌ | ✅ | 账号密码 | ⚠️ SDK 文件列表+Mock |
-| `caiyun` | 中国移动云盘 | ❌ | ❌ | ❌ | ✅ | Authorization(Basic) | ⚠️ 文件列表+Mock |
+| `caiyun` | 中国移动云盘 | ⚠️(需登录) | ❌ | ⚠️(需登录) | ✅ | Authorization(Basic) | ⚠️ 协议+Mock |
+| `uc` | UC 网盘 | ⚠️(需登录) | ❌ | ⚠️(需登录) | ✅ | Cookie | ⚠️ 协议+Mock |
+| `xunlei` | 迅雷云盘 | ⚠️(需登录) | ❌ | ⚠️(需登录) | ✅ | refresh_token | ⚠️ 协议+Mock |
 | `mock` | Mock | - | - | - | - | - | 测试用 |
 
-图例：✅ 已实现/可用；⚠️ 实现但需真实账号验证；❌ 平台不支持或未实现。
+图例：✅ 已实现/可用；⚠️ 实现但需真实账号验证（或需登录）；❌ 平台不支持或未实现。
+
+> 注：UC / 迅雷 / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
+> `INSPECT`（无账号）会返回 `ACTION_REQUIRED`；`SAVE` / `SAVE_AND_DOWNLOAD`
+> 流程会使用账号凭据完成解析+转存。
 
 ## 接入进度与验证状态（诚实声明）
 
@@ -33,6 +39,9 @@
 | `123` | 自研 HTTP Adapter | CRC32 签名 → share/get 列表 → share/download/info 直链 | 真实分享解析/下载/转存 |
 | `pikpak` | 自研 HTTP Adapter | MD5链 captcha_sign → share/detail 列表 → file_info 直链 | 真实分享解析/下载（需住宅 IP） |
 | `baidu` | 自研 HTTP Adapter | wxlist 匿名列表 → tplconfig 签名 → sharedownload 直链(需Cookie) | 真实分享解析 + Cookie 直链 |
+| `caiyun` | 自研 HTTP Adapter | AES-CBC 加密 + mcloud_sign 签名 → getOutLinkInfoV6 解析 → IBatchOprTask 转存 | 真实分享解析/转存/下载 |
+| `uc` | 自研 HTTP Adapter | sharepage/v2/detail 取 stoken → sharepage/detail 列表 → sharepage/save 转存 | 真实分享解析/转存 |
+| `xunlei` | 自研 HTTP Adapter | refresh_token + MD5链 captcha_sign → share 解析 → share/restore 转存 | 真实分享解析/转存 |
 
 ### 基于成熟 SDK（MIT）
 
@@ -42,7 +51,6 @@
 | `aliyun` | aligo | 分享解析/转存/下载 | 转存/refresh_token 登录 |
 | `115` | p115client | 分享解析(匿名)/转存/下载/文件列表 | 转存/下载端到端 |
 | `cloud189` | cloud189 | 账号文件列表/下载 | 分享解析(不支持) |
-| `caiyun` | 自研 HTTP Adapter | 账号文件列表/下载 | 分享解析(未验证) |
 
 ## 参考项目评估与许可证合规
 
@@ -52,9 +60,12 @@
 | [aligo](https://github.com/foyoux/aligo) | MIT | PyPI 依赖 `aligo` | ✅ 已采用 |
 | [p115client](https://github.com/ChenyangGao/p115client) | MIT | PyPI 依赖 `p115client` | ✅ 已采用 |
 | [cloud189](https://github.com/s0urcelab/cloud189) | MIT | PyPI 依赖 `cloud189` | ✅ 已采用 |
+| [pan-relay](https://github.com/ucmao/pan-relay) | MIT | 仅参考协议 | ✅ 参考 UC/迅雷/移动云盘协议，代码独立编写 |
 | [netdisk-fast-download](https://github.com/qaiu/netdisk-fast-download) | MIT | 仅参考协议 | ✅ 参考蓝奏云/123/UC 协议思路，代码独立编写 |
 | [baidu-parse](https://github.com/xb18/baidu-parse) | MIT | 仅参考协议 | ✅ 参考百度 wxlist/sharedownload 协议，代码独立编写 |
 | [alist](https://github.com/alist-org/alist) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考 123/PikPak 协议思路 |
+| [OpenList](https://github.com/OpenListTeam/OpenList) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考微云驱动协议思路 |
+| [weiyun-sdk-go](https://github.com/foxxorcat/weiyun-sdk-go) | Apache-2.0 | 仅参考协议 | ✅ 参考微云账号文件操作协议（无分享解析/转存） |
 | [pikdirect](https://github.com/gordonhwc/pikdirect) | MIT | 仅参考协议 | ✅ 参考 PikPak captcha_sign 协议 |
 | [pikpakapi](https://github.com/Quan666/PikPakAPI) | GPL-3.0 | **不使用** | ❌ GPL 传染性，不可复制，仅参考协议思路 |
 | [quark-auto-save](https://github.com/Cp0204/quark-auto-save) | AGPL-3.0 | 仅参考思路 | ❌ 不可复制代码 |
@@ -70,9 +81,7 @@
 
 | 平台 | 阻塞原因 |
 |------|---------|
-| UC 网盘 | 必须登录 Cookie 才能解析（netdisk-fast-download 确认），协议端点未公开、无成熟 SDK，且需短信验证码等特殊认证，无法匿名或离线验证 |
-| 迅雷云盘 | 需账号登录（密码/短信），`api-pan.xunlei.com` 端点未公开、协议不稳定，无成熟 Python SDK |
-| 腾讯微云 | 仅有 2015 年老协议（weiyun-api，MIT）与需 Token 的 MCP 实现，分享解析/转存协议不公开 |
+| 腾讯微云 | 分享解析/转存协议不公开。weiyun-sdk-go（Apache-2.0）仅支持账号文件列表/上传/下载（QQ 扫码登录），不含分享转存；无公开的微云分享解析协议实现可参考 |
 
 这些平台遵循「不伪造支持、不绕过验证码/风控」的原则，暂不实现空方法骨架。
 

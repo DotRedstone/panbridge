@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 from panbridge.domain.enums import Action, TaskStatus
 from panbridge.domain.errors import DomainError, ErrorCode
-from panbridge.domain.models import Task
+from panbridge.domain.models import Share, Task
 from panbridge.persistence import TaskRepository, session_scope
 from panbridge.providers.registry import ProviderRegistry
 
@@ -114,9 +114,36 @@ class Worker:
         from panbridge.application.link_extraction import extract_share
 
         extracted = extract_share(task.input_text or "")
-        share = await provider.inspect_share(
-            extracted.share_id, extracted.password
-        )
+
+        # 部分平台（UC/迅雷/移动云盘等）解析分享需要登录态。
+        # 先尝试匿名解析；若需登录，则获取账号后用带 account 的解析。
+        share = None
+        account = None
+        try:
+            share = await provider.inspect_share(
+                extracted.share_id, extracted.password
+            )
+        except DomainError as exc:
+            if exc.code != ErrorCode.UNSUPPORTED_OPERATION:
+                raise
+            # 需登录平台：SAVE/DOWNLOAD 动作有 account 可用；
+            # 纯 INSPECT 动作无 account，如实返回需登录错误。
+            if task.action == Action.INSPECT:
+                raise DomainError(
+                    ErrorCode.ACTION_REQUIRED,
+                    f"provider {task.provider} requires login to inspect share",
+                ) from exc
+            account = await self._get_account(task.account_id)
+            files = await provider.list_share_files(
+                extracted.share_id, extracted.password, account=account
+            )
+            share = Share(
+                provider=task.provider or "",
+                share_id=extracted.share_id,
+                title=extracted.share_id,
+                files=files,
+                password=extracted.password,
+            )
 
         if task.action == Action.INSPECT:
             return {"title": share.title, "files": len(share.files)}
@@ -128,7 +155,6 @@ class Worker:
         # 源文件名映射（下载时用于定位转存后的文件）
         name_by_fid = {f.file_id: f.name for f in share.files}
 
-        account = None
         saved_file_ids: list[str] = []
 
         # 转存目标目录：若未指定，则创建独立文件夹，避免污染根目录、
@@ -136,7 +162,7 @@ class Worker:
         destination = task.destination
 
         if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
-            account = await self._get_account(task.account_id)
+            account = account or await self._get_account(task.account_id)
             await self._set_status(task.id, TaskStatus.SAVING)
 
             if not destination:
