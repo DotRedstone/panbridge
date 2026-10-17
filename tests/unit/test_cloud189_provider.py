@@ -221,7 +221,9 @@ async def test_save_shared_files(monkeypatch):
         _account(), "abc", None, ["f1"], "-11", "skip"
     )
     assert result.remote_task_id == "T1"
-    assert result.saved_file_ids == ["f1"]
+    # 转存后账号 id 与分享源 fid 不同命名空间，不伪造 saved_file_ids，
+    # 交由 resolve_saved_file_ids 从目标目录匹配。
+    assert result.saved_file_ids == []
 
 
 @pytest.mark.asyncio
@@ -238,3 +240,15 @@ def test_extract_share_code():
 
     assert _extract_share_code("https://cloud.189.cn/t/abc123") == "abc123"
     assert _extract_share_code("abc123") == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_resolve_saved_file_ids(monkeypatch):
+    import panbridge.providers.cloud189.provider as mod
+
+    mod.Cloud189 = _FakeCloud189
+    p = Cloud189Provider(cipher=_FakeCipher())
+    resolved = await p.resolve_saved_file_ids(
+        _account(), "-11", ["a.txt", "missing.txt"]
+    )
+    assert resolved == ["1"]

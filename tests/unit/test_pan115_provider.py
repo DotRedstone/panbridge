@@ -52,6 +52,11 @@ def _account(credential: str = "UID=1;CID=2;SEID=3") -> Account:
     )
 
 
+class _FakeCipher:
+    def decrypt(self, token):
+        return token
+
+
 @pytest.mark.asyncio
 async def test_inspect_share_anonymous(monkeypatch):
     p = _make_provider(monkeypatch)
@@ -78,3 +83,25 @@ def test_map_error_password():
 def test_map_error_auth():
     err = Pan115Provider._map_error(Exception("401 未登录"))
     assert err.code == ErrorCode.ACCOUNT_EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_resolve_saved_file_ids(monkeypatch):
+    class _ResolveClient(_FakeClient):
+        def fs_files(self, payload):
+            return {
+                "state": True,
+                "data": [
+                    {"fid": "new1", "n": "a.mkv", "s": 100},
+                    {"fid": "new2", "n": "b.mkv", "s": 200},
+                ],
+            }
+
+    import panbridge.providers.pan115.provider as mod
+
+    mod.P115Client = _ResolveClient
+    p = Pan115Provider(cipher=_FakeCipher())
+    resolved = await p.resolve_saved_file_ids(
+        _account(), "999", ["a.mkv", "missing.mkv"]
+    )
+    assert resolved == ["new1"]

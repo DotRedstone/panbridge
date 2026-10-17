@@ -211,6 +211,36 @@ class Pan115Provider(ShareProvider):
             raise self._map_error(exc) from exc
         return TransferResult(saved_file_ids=[])
 
+    async def resolve_saved_file_ids(
+        self, account: Account, destination: str | None, names: list[str]
+    ) -> list[str]:
+        """转存后从目标目录按文件名解析新 fid。
+
+        115 的 share_receive 转存是异步的，文件落在 destination(cid) 目录，
+        获得新的 pick_code(fid)。下载必须用新 fid，故按文件名匹配。
+        同名文件匹配到多个时抛出错误，避免静默下错文件。
+        """
+        files = await self.list_account_files(account, destination or "0")
+        name_set = set(names)
+        by_name: dict[str, list[str]] = {}
+        for item in files:
+            if item.name in name_set and not item.is_dir:
+                by_name.setdefault(item.name, []).append(item.file_id)
+
+        resolved: list[str] = []
+        for name in names:
+            candidates = by_name.get(name, [])
+            if len(candidates) == 1:
+                resolved.append(candidates[0])
+            elif len(candidates) > 1:
+                raise DomainError(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"ambiguous file name after save: {name!r} matched "
+                    f"{len(candidates)} files; use a dedicated empty folder",
+                    retryable=False,
+                )
+        return resolved
+
     async def create_folder(
         self, account: Account, name: str, parent_id: str = "0"
     ) -> str:

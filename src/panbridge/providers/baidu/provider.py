@@ -99,6 +99,7 @@ class BaiduProvider(ShareProvider):
             "list_share_files",
             "get_download_info",
             "save_shared_files",
+            "list_account_files",
             "validate_account",
         }
     )
@@ -350,27 +351,129 @@ class BaiduProvider(ShareProvider):
         )
         return TransferResult(remote_task_id=str(task_id) if task_id else None)
 
+    async def _get_bdstoken(self, client: httpx.AsyncClient, cookie: str) -> str:
+        """获取账号 bdstoken（转存与账号文件操作均需）。"""
+        resp = await client.get(
+            "https://pan.baidu.com/api/gettemplatevariable"
+            "?fields=[%22bdstoken%22]&clienttype=0&web=1",
+            headers={"User-Agent": _UA, "Cookie": cookie},
+        )
+        if resp.status_code != 200 or resp.json().get("errno") != 0:
+            raise DomainError(
+                ErrorCode.ACCOUNT_EXPIRED,
+                "baidu cookie invalid (cannot get bdstoken)",
+            )
+        return resp.json()["data"]["bdstoken"]
+
     async def list_account_files(
         self, account: Account, parent_id: str | None = None
     ) -> list[ShareFile]:
-        raise DomainError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            "baidu account listing requires cookie (not yet verified)",
-        )
+        """列出账号网盘目录文件（需 BDUSS Cookie）。"""
+        cookie = self._decrypt_credential(account)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            bdstoken = await self._get_bdstoken(client, cookie)
+            resp = await client.get(
+                "https://pan.baidu.com/api/list",
+                params={
+                    "dir": parent_id or "/",
+                    "order": "time",
+                    "desc": "1",
+                    "showempty": "0",
+                    "web": "1",
+                    "page": "1",
+                    "num": "1000",
+                    "bdstoken": bdstoken,
+                    "clienttype": "0",
+                },
+                headers={"User-Agent": _UA, "Cookie": cookie},
+            )
+            if resp.status_code != 200 or resp.json().get("errno") != 0:
+                raise DomainError(
+                    ErrorCode.ACCOUNT_EXPIRED,
+                    "baidu account listing failed (cookie invalid?)",
+                )
+            items = resp.json().get("list", [])
+        return [self._map_file(it) for it in items if isinstance(it, dict)]
 
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
-        """获取分享文件直链（需 Cookie）。
+        """获取账号网盘文件直链（需 BDUSS Cookie）。
 
-        file_id 为 share 文件列表中的 fs_id。需要 share 的 seckey/shareid/uk
-        等上下文，这些在 inspect_share 时已解析。这里需要 share 上下文，
-        因此实际下载链路应复用 resolve_share_dlink 传入完整上下文。
+        用于转存后的文件下载（file_id 为账号网盘 fs_id）。
+        分享文件直链走 resolve_share_dlink（需分享上下文）。
         """
-        raise DomainError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            "baidu share download needs share context (use resolve_share_dlink)",
-        )
+        cookie = self._decrypt_credential(account)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            bdstoken = await self._get_bdstoken(client, cookie)
+            body = (
+                "encrypt=0"
+                "&fid_list=" + urllib.parse.quote(f"[{file_id}]")
+                + "&type=dlink"
+            )
+            resp = await client.post(
+                "https://pan.baidu.com/api/download"
+                f"?bdstoken={bdstoken}&clienttype=0&web=1",
+                content=body,
+                headers={
+                    "User-Agent": _UA,
+                    "Cookie": cookie,
+                    "Referer": "https://pan.baidu.com/disk/home",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            if resp.status_code != 200 or resp.json().get("errno") != 0:
+                raise DomainError(
+                    ErrorCode.DOWNLOAD_FAILED,
+                    "baidu account download failed",
+                    retryable=True,
+                )
+            dlink = resp.json().get("dlink", "")
+            if not dlink:
+                raise DomainError(
+                    ErrorCode.DOWNLOAD_FAILED,
+                    "baidu returned empty dlink",
+                    retryable=True,
+                )
+        return {
+            "url": dlink,
+            "name": f"{file_id}.bin",
+            "size": None,
+            "checksum": None,
+            "headers": {
+                "User-Agent": _UA,
+                "Cookie": cookie,
+            },
+        }
+
+    async def resolve_saved_file_ids(
+        self, account: Account, destination: str | None, names: list[str]
+    ) -> list[str]:
+        """转存后从目标目录按文件名解析账号 fs_id。
+
+        百度转存为异步任务，文件落到 destination 目录获得账号 fs_id。
+        下载必须用账号 fs_id，故按文件名匹配。同名匹配到多个时抛错。
+        """
+        files = await self.list_account_files(account, destination or "/")
+        name_set = set(names)
+        by_name: dict[str, list[str]] = {}
+        for item in files:
+            if item.name in name_set and not item.is_dir:
+                by_name.setdefault(item.name, []).append(item.file_id)
+
+        resolved: list[str] = []
+        for name in names:
+            candidates = by_name.get(name, [])
+            if len(candidates) == 1:
+                resolved.append(candidates[0])
+            elif len(candidates) > 1:
+                raise DomainError(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"ambiguous file name after save: {name!r} matched "
+                    f"{len(candidates)} files; use a dedicated empty folder",
+                    retryable=False,
+                )
+        return resolved
 
     async def resolve_share_dlink(
         self,

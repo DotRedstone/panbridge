@@ -414,6 +414,36 @@ class CaiyunProvider(ShareProvider):
 
         return TransferResult(remote_task_id=str(task_id))
 
+    async def resolve_saved_file_ids(
+        self, account: Account, destination: str | None, names: list[str]
+    ) -> list[str]:
+        """转存后从目标目录按文件名解析新 fileId。
+
+        移动云盘转存是异步任务，文件落到 destination(parentFileId) 目录，
+        获得新的 fileId。下载必须用新 fileId，故按文件名匹配。
+        同名文件匹配到多个时抛出错误，避免静默下错文件。
+        """
+        files = await self.list_account_files(account, destination or "/")
+        name_set = set(names)
+        by_name: dict[str, list[str]] = {}
+        for item in files:
+            if item.name in name_set and not item.is_dir:
+                by_name.setdefault(item.name, []).append(item.file_id)
+
+        resolved: list[str] = []
+        for name in names:
+            candidates = by_name.get(name, [])
+            if len(candidates) == 1:
+                resolved.append(candidates[0])
+            elif len(candidates) > 1:
+                raise DomainError(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"ambiguous file name after save: {name!r} matched "
+                    f"{len(candidates)} files; use a dedicated empty folder",
+                    retryable=False,
+                )
+        return resolved
+
     async def list_account_files(
         self, account: Account, parent_id: str | None = None
     ) -> list[ShareFile]:

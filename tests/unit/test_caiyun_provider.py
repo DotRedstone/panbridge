@@ -185,3 +185,27 @@ def test_parse_share_id():
     url = "https://yun.139.com/shareweb/#/w/i/abc123"
     assert CaiyunProvider._parse_share_id(url) == "abc123"
     assert CaiyunProvider._parse_share_id("abc123") == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_resolve_saved_file_ids(monkeypatch):
+    routes = {
+        "/file/list": _FakeResponse(
+            200,
+            {
+                "code": "0000",
+                "data": {
+                    "items": [
+                        {"fileId": "new1", "name": "a.txt", "type": "file"},
+                        {"fileId": "new2", "name": "b.txt", "type": "file"},
+                    ]
+                },
+            },
+        )
+    }
+    _install_fake(monkeypatch, routes)
+    p = CaiyunProvider(cipher=_FakeCipher())
+    resolved = await p.resolve_saved_file_ids(
+        _account(), "/", ["a.txt", "missing.txt"]
+    )
+    assert resolved == ["new1"]

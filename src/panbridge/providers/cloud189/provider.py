@@ -398,9 +398,39 @@ class Cloud189Provider(ShareProvider):
         if result.get("res_code") not in (0, "0", None):
             self._raise_share_error(result)
         task_id = str(result.get("taskId") or "")
-        return TransferResult(
-            saved_file_ids=list(file_ids), remote_task_id=task_id
-        )
+        # 转存后文件在账号网盘获得新的 id（与分享源 fileId 不同命名空间），
+        # 这里无法直接拿到，故不伪造 saved_file_ids，交由 resolve_saved_file_ids
+        # 从目标目录按文件名匹配。
+        return TransferResult(remote_task_id=task_id)
+
+    async def resolve_saved_file_ids(
+        self, account: Account, destination: str | None, names: list[str]
+    ) -> list[str]:
+        """转存后从目标目录按文件名解析账号文件 id。
+
+        天翼转存为异步任务，文件落到 destination 目录获得新 id。
+        下载必须用账号 id，故按文件名匹配。同名匹配到多个时抛出错误。
+        """
+        files = await self.list_account_files(account, destination or "-11")
+        name_set = set(names)
+        by_name: dict[str, list[str]] = {}
+        for item in files:
+            if item.name in name_set and not item.is_dir:
+                by_name.setdefault(item.name, []).append(item.file_id)
+
+        resolved: list[str] = []
+        for name in names:
+            candidates = by_name.get(name, [])
+            if len(candidates) == 1:
+                resolved.append(candidates[0])
+            elif len(candidates) > 1:
+                raise DomainError(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"ambiguous file name after save: {name!r} matched "
+                    f"{len(candidates)} files; use a dedicated empty folder",
+                    retryable=False,
+                )
+        return resolved
 
     async def list_account_files(
         self, account: Account, parent_id: str | None = None

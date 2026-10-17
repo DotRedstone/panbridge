@@ -43,13 +43,13 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a):
         return None
 
-    async def post(self, url, content=None, headers=None):
+    async def post(self, url, content=None, headers=None, params=None):
         for path, resp in self._routes.items():
             if path in url:
                 return resp
         return _FakeResponse(404, {"errno": -1})
 
-    async def get(self, url, headers=None):
+    async def get(self, url, headers=None, params=None):
         for path, resp in self._routes.items():
             if path in url:
                 return resp
@@ -177,3 +177,83 @@ def _account():
 class _FakeCipher:
     def decrypt(self, token: str) -> str:
         return "BDUSS=xyz; STOKEN=abc"
+
+
+@pytest.mark.asyncio
+async def test_list_account_files(monkeypatch):
+    routes = {
+        "/api/gettemplatevariable": _FakeResponse(
+            200, {"errno": 0, "data": {"bdstoken": "bt123"}}
+        ),
+        "/api/list": _FakeResponse(
+            200,
+            {
+                "errno": 0,
+                "list": [
+                    {
+                        "fs_id": "101",
+                        "server_filename": "a.txt",
+                        "isdir": 0,
+                        "size": 10,
+                    }
+                ],
+            },
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = BaiduProvider(cipher=_FakeCipher())
+    files = await p.list_account_files(_account(), "/dest")
+    assert len(files) == 1
+    assert files[0].file_id == "101"
+    assert files[0].name == "a.txt"
+
+
+@pytest.mark.asyncio
+async def test_get_download_info_account(monkeypatch):
+    routes = {
+        "/api/gettemplatevariable": _FakeResponse(
+            200, {"errno": 0, "data": {"bdstoken": "bt123"}}
+        ),
+        "/api/download": _FakeResponse(
+            200, {"errno": 0, "dlink": "https://d.pcs.baidu.com/x"}
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = BaiduProvider(cipher=_FakeCipher())
+    info = await p.get_download_info(_account(), "101")
+    assert info["url"] == "https://d.pcs.baidu.com/x"
+
+
+@pytest.mark.asyncio
+async def test_resolve_saved_file_ids(monkeypatch):
+    routes = {
+        "/api/gettemplatevariable": _FakeResponse(
+            200, {"errno": 0, "data": {"bdstoken": "bt123"}}
+        ),
+        "/api/list": _FakeResponse(
+            200,
+            {
+                "errno": 0,
+                "list": [
+                    {
+                        "fs_id": "101",
+                        "server_filename": "a.txt",
+                        "isdir": 0,
+                        "size": 10,
+                    },
+                    {
+                        "fs_id": "102",
+                        "server_filename": "b.txt",
+                        "isdir": 0,
+                        "size": 20,
+                    },
+                ],
+            },
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = BaiduProvider(cipher=_FakeCipher())
+    resolved = await p.resolve_saved_file_ids(
+        _account(), "/dest", ["a.txt", "missing.txt"]
+    )
+    assert resolved == ["101"]
