@@ -17,28 +17,47 @@
 
 ## 快速开始
 
-### 依赖
+### 使用 Nix 开发环境（NixOS 推荐）
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)（推荐）或 pip
+项目通过 [Nix Flake](https://nixos.wiki/wiki/Flakes) 统一管理开发工具链
+（Python、uv、ruff、sqlite），所有工具由 nixpkgs 提供，不依赖 curl/pip
+官方安装脚本。首次运行会拉取并锁定依赖（生成 `flake.lock`），之后可复用。
 
-### 安装与运行
+```fish
+# 进入开发环境（提供 python/uv/ruff/sqlite）
+nix develop
 
-```bash
-# 使用 uv（推荐）
-uv sync
+# 按 uv.lock 安装 Python 依赖（不升级）
+uv sync --locked
 
-# 启动 API 服务（默认监听 127.0.0.1:8000）
-uv run uvicorn panbridge.main:app --host 127.0.0.1 --port 8000
-
-# 另开终端启动 Worker（后台任务执行）
-uv run python -m panbridge.worker
+# 扫码登录（终端显示二维码，夸克 App 扫描后自动完成）
+uv run panbridge auth login
 ```
 
-### 使用 Nix 开发环境
+也支持一条命令直接运行：
+
+```fish
+nix develop -c uv run panbridge auth login
+```
+
+#### NixOS + fish 说明
+
+- 开发环境已设置 `UV_PYTHON_DOWNLOADS=never`，强制 uv 使用 Nix 提供的
+  Python，避免下载动态链接的官方解释器（NixOS 无法运行，会报
+  `Could not start dynamically linked executable`）。
+- `shellHook` 会将 Nix 提供的 uv/python/ruff 前置到 `PATH`，覆盖
+  `~/.local/bin` 里由 uv 官方安装脚本写入的动态链接二进制。
+- 若之前用 `curl | sh` 装过 uv，建议移除 `~/.local/bin/uv`、`~/.local/bin/uvx`
+  及 `~/.local/share/uv`，避免与 Nix 提供的 uv 混淆。
+
+#### 非 Nix 环境（可选）
+
+也可直接用 uv 管理依赖：
 
 ```bash
-nix develop
+uv sync
+uv run uvicorn panbridge.main:app --host 127.0.0.1 --port 8000
+uv run python -m panbridge.worker
 ```
 
 ### 配置

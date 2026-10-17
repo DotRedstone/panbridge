@@ -2,13 +2,23 @@
 
 ## 本地开发
 
-```bash
+先进入 Nix 开发环境（提供 uv、python、ruff）：
+
+```fish
+nix develop
+
+# 按 uv.lock 安装依赖（不升级）
+uv sync --locked
+
 # 启动 API
 uv run uvicorn panbridge.main:app --host 127.0.0.1 --port 8000 --reload
 
 # 启动 Worker（另开终端）
 uv run python -m panbridge.worker
 ```
+
+> NixOS 下请勿使用 `curl | sh` 安装的 uv（动态链接，无法运行），
+> 统一通过 `nix develop` 使用 nixpkgs 提供的 uv。
 
 ## 生产部署方向
 
