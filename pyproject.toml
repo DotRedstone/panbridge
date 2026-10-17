@@ -23,6 +23,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "qrcode>=7.4",
     "quarkpan>=1.0.0",
+    "aligo>=6.0",
 ]
 
 [project.optional-dependencies]

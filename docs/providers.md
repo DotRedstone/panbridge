@@ -2,20 +2,24 @@
 
 ## 现状
 
-已实现两个 Provider：
+已实现三个 Provider：
 
 | Provider | 类型 | 用途 |
 |----------|------|------|
 | `mock` | Mock | 无账号环境验证完整任务链路（测试/演示） |
 | `quark` | 真实接入 | 夸克网盘转存与下载（基于 QuarkPan） |
+| `aliyun` | 真实接入 | 阿里云盘分享解析/下载（基于 aligo） |
 
 ## 参考项目评估
 
 | 项目 | 许可证 | 复用方式 | 结论 |
 |------|--------|----------|------|
 | [QuarkPan](https://github.com/lich0821/QuarkPan) | MIT | **PyPI 依赖**（`quarkpan`） | ✅ **已采用**：通过 `pip install quarkpan` 引入，薄封装为 `QuarkProvider` |
+| [aligo](https://github.com/foyoux/aligo) | MIT | **PyPI 依赖**（`aligo`） | ✅ **已采用**：复用 API 端点常量与 schema，薄封装为 `AliyunProvider` |
 | [quark-auto-save](https://github.com/Cp0204/quark-auto-save) | AGPL-3.0 | 仅参考思路 | ❌ 不可复制代码（AGPL 传染性），仅参考 API 请求思路 |
 | [cloud-auto-save](https://github.com/OzoO0/cloud-auto-save) | 待核实 | 待评估 | 未采用，需进一步核实许可证 |
+| [pan123](https://github.com/jonntd/Pan123) | MIT | 待评估 | 123 云盘开放平台 SDK，需 access_token（开放平台资质），暂未接入 |
+| [bypy](https://github.com/houtianze/bypy) | MIT | 待评估 | 百度网盘 PCS 客户端，仅能操作 `/apps/bypy` 目录，且已进入维护状态，不适合转存他人分享 |
 
 ## 夸克网盘真实接入（QuarkProvider）
 
@@ -126,6 +130,66 @@ uv run python scripts/e2e_quark.py --share 'https://pan.quark.cn/s/xxxx 提取�
      -H 'Content-Type: application/json' \
      -d '{"input": {"text": "https://pan.quark.cn/s/xxxx", "action": "save_and_download", "account_id": "<账号id>"}}'
    ```
+
+## 阿里云盘真实接入（AliyunProvider）
+
+### 依赖来源
+
+- 包名：`aligo`（PyPI）
+- 版本：`6.2.8`（在 `pyproject.toml` 声明 `aligo>=6.0`）
+- 许可证：**MIT**
+- 复用方式：复用 aligo 定义的 **API 端点常量与请求/响应 schema**，但用**独立 httpx 客户端**发起匿名请求（见下「副作用隔离」），转存路径复用 `Aligo(refresh_token=...)`。
+
+### 核心特性：分享解析/下载无需登录
+
+已用真实公开分享链接验证（无凭据）：
+
+| 能力 | 端点 | 是否需登录 | 验证状态 |
+|------|------|-----------|---------|
+| 获取分享 token | `POST /v2/share_link/get_share_token` | 否 | ✅ 真实验证 |
+| 分享详情（标题/文件数） | `POST /adrive/v2/share_link/get_share_by_anonymous` | 否 | ✅ 真实验证 |
+| 分享文件列表 | `POST /adrive/v2/file/list_by_share` | 否 | ✅ 真实验证 |
+| 分享直链下载 | `POST /v2/file/get_share_link_download_url` | 否 | ⚠️ 未验证 |
+| 转存到自己网盘 | `share_file_saveto_drive` | **是**（refresh_token） | ⚠️ 需账号 |
+| 自己盘文件直链 | `get_download_url` | 是 | ⚠️ 需账号 |
+
+因此 `inspect_share`、`list_share_files` 无需账号即可工作；只有
+`save_shared_files`（转存）需要登录。
+
+### 副作用隔离
+
+aligo 的 `Aligo()` / `Auth()` 在初始化时会**阻塞轮询二维码、打印终端 ASCII
+二维码、写 `~/.aligo/` 配置目录**。本项目：
+
+- 匿名请求（分享解析/列表/直链）**完全不用 aligo 的客户端**，改用独立
+  `httpx.AsyncClient` 直接调用公开 API（复用 aligo 的端点常量），无任何副作用。
+- 转存路径复用 `Aligo(refresh_token=...)`，但通过 `show=lambda _: None`
+  静默二维码、`level=logging.ERROR` 抑制终端日志、`re_login=False` 避免
+  token 失效时阻塞重新登录。
+
+### 字段映射（阿里云盘 → 领域）
+
+| 阿里字段 | 领域字段 |
+|----------|----------|
+| `file_id` | `file_id` |
+| `name` | `name` |
+| `type`（`file`/`folder`） | `is_dir` |
+| `size` | `size` |
+
+### 登录方式
+
+阿里云盘通过 **refresh_token** 认证（OAuth）。当前支持手动提供
+refresh_token（通过 `POST /v1/accounts`，凭据加密存储）；扫码登录
+（aligo 的 `Auth` 二维码流程）作为后续优化，未实现。
+
+### 已验证情况（诚实声明）
+
+- ✅ **真实验证**：匿名分享解析（token 获取、详情、文件列表）用真实公开
+  分享链接跑通；已取消分享正确映射为 `INVALID_SHARE`。
+- ✅ **离线验证**：字段映射、错误映射、链接识别（`alipan.com`/`aliyundrive.com`）
+  通过单元测试覆盖。
+- ⚠️ **未经真实账号验证**：转存、分享直链下载、自己盘下载、refresh_token
+  登录均需真实账号，未做端到端验证。
 
 ## 新增 Provider 的规范
 

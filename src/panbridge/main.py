@@ -24,6 +24,7 @@ from panbridge.persistence import (
     create_sessionmaker,
     init_db,
 )
+from panbridge.providers.aliyun.provider import AliyunProvider
 from panbridge.providers.quark.mock import MockProvider
 from panbridge.providers.quark.provider import QuarkProvider
 from panbridge.providers.registry import ProviderRegistry
@@ -47,6 +48,8 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     # secret_key 已由 Settings.from_env 自动生成/加载，无需手工填写。
     cipher = CredentialCipher(settings.secret_key) if settings.secret_key else None
     registry.register(QuarkProvider(cipher=cipher))
+    # 阿里云盘：分享解析/直链下载无需登录，仅转存需要 refresh_token
+    registry.register(AliyunProvider(cipher=cipher))
 
     downloader = HttpDownloader()
 
