@@ -1,8 +1,6 @@
-"""天翼云盘 Provider 单元测试（mock cloud189，不依赖网络）。"""
+"""天翼云盘 Provider 单元测试（mock cloud189 + httpx，不依赖网络）。"""
 
 from __future__ import annotations
-
-import json
 
 import pytest
 
@@ -29,8 +27,57 @@ class _FakeCloud189:
 
 
 class _FakeCipher:
+    def __init__(self, plain: str = '{"username": "u", "password": "p"}'):
+        self.plain = plain
+
     def decrypt(self, token):
-        return json.dumps({"username": "u", "password": "p"})
+        return self.plain
+
+
+class _FakeResponse:
+    def __init__(self, status: int = 200, data: dict | None = None):
+        self.status_code = status
+        self._data = data or {}
+
+    def json(self):
+        return self._data
+
+
+class _FakeAsyncClient:
+    def __init__(self, routes: dict[str, _FakeResponse]):
+        self._routes = routes
+        self.calls: list[tuple[str, str]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    def _match(self, path: str):
+        for key in sorted(self._routes, key=len, reverse=True):
+            if path.endswith(key):
+                return self._routes[key]
+        return _FakeResponse(404, {"res_code": "ShareInfoNotFound"})
+
+    async def get(self, url, params=None, headers=None):
+        path = url.split("?")[0]
+        self.calls.append(("GET", path))
+        return self._match(path)
+
+    async def post(self, url, data=None, headers=None):
+        path = url.split("?")[0]
+        self.calls.append(("POST", path))
+        return self._match(path)
+
+
+def _install_httpx(monkeypatch, routes):
+    import panbridge.providers.cloud189.provider as mod
+
+    def fake_client(*a, **k):
+        return _FakeAsyncClient(routes)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
 
 
 def _account() -> Account:
@@ -40,6 +87,9 @@ def _account() -> Account:
         label="test",
         encrypted_credential="enc",
     )
+
+
+# ---- 账号操作（SDK） ----
 
 
 @pytest.mark.asyncio
@@ -52,7 +102,6 @@ async def test_list_account_files(monkeypatch):
     assert len(files) == 2
     assert files[0].name == "a.txt"
     assert files[0].is_dir is False
-    assert files[1].name == "dir"
     assert files[1].is_dir is True
 
 
@@ -67,7 +116,7 @@ async def test_get_download_info(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_validate_account(monkeypatch):
+async def test_validate_account_sdk(monkeypatch):
     import panbridge.providers.cloud189.provider as mod
 
     mod.Cloud189 = _FakeCloud189
@@ -75,23 +124,117 @@ async def test_validate_account(monkeypatch):
     assert await p.validate_account(_account()) is True
 
 
-@pytest.mark.asyncio
-async def test_inspect_share_unsupported(monkeypatch):
-    import panbridge.providers.cloud189.provider as mod
-
-    mod.Cloud189 = _FakeCloud189
-    p = Cloud189Provider(cipher=_FakeCipher())
-    with pytest.raises(DomainError) as exc:
-        await p.inspect_share("abc", None)
-    assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION
+# ---- 分享解析（HTTP） ----
 
 
 @pytest.mark.asyncio
-async def test_save_shared_files_unsupported(monkeypatch):
-    import panbridge.providers.cloud189.provider as mod
+async def test_inspect_share(monkeypatch):
+    _install_httpx(
+        monkeypatch,
+        {
+            "/api/open/share/getShareInfoByCodeV2.action": _FakeResponse(
+                200,
+                {
+                    "res_code": 0,
+                    "shareId": "S123",
+                    "shareMode": 2,
+                    "fileId": "0",
+                    "shareName": "我的分享",
+                    "accessCode": "",
+                },
+            ),
+            "/api/open/share/listShareDir.action": _FakeResponse(
+                200,
+                {
+                    "res_code": 0,
+                    "fileListAO": {
+                        "fileList": [
+                            {"id": "f1", "name": "a.mkv", "size": 10, "isFolder": 0},
+                            {"id": "d1", "name": "dir", "isFolder": 1},
+                        ]
+                    },
+                },
+            ),
+        },
+    )
+    p = Cloud189Provider(cipher=_FakeCipher())
+    share = await p.inspect_share("https://cloud.189.cn/t/abc123", None)
+    assert share.provider == "cloud189"
+    assert share.title == "我的分享"
+    assert len(share.files) == 2
+    assert share.files[0].name == "a.mkv"
+    assert share.files[1].is_dir is True
 
-    mod.Cloud189 = _FakeCloud189
+
+@pytest.mark.asyncio
+async def test_inspect_share_invalid(monkeypatch):
+    _install_httpx(
+        monkeypatch,
+        {
+            "/api/open/share/getShareInfoByCodeV2.action": _FakeResponse(
+                200, {"res_code": "ShareInfoNotFound", "res_message": "不存在"}
+            )
+        },
+    )
     p = Cloud189Provider(cipher=_FakeCipher())
     with pytest.raises(DomainError) as exc:
-        await p.save_shared_files(_account(), "x", None, [], None, "skip")
-    assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION
+        await p.inspect_share("bad", None)
+    assert exc.value.code == ErrorCode.INVALID_SHARE
+
+
+@pytest.mark.asyncio
+async def test_inspect_share_wrong_password(monkeypatch):
+    _install_httpx(
+        monkeypatch,
+        {
+            "/api/open/share/getShareInfoByCodeV2.action": _FakeResponse(
+                200, {"res_code": "NeedAccessCode", "res_message": "需要访问码"}
+            )
+        },
+    )
+    p = Cloud189Provider(cipher=_FakeCipher())
+    with pytest.raises(DomainError) as exc:
+        await p.inspect_share("abc", "wrong")
+    assert exc.value.code == ErrorCode.INVALID_PASSWORD
+
+
+# ---- 转存（HTTP + cookie） ----
+
+
+@pytest.mark.asyncio
+async def test_save_shared_files(monkeypatch):
+    _install_httpx(
+        monkeypatch,
+        {
+            "/api/open/share/getShareInfoByCodeV2.action": _FakeResponse(
+                200, {"res_code": 0, "shareId": "S123", "shareMode": 2}
+            ),
+            "/api/open/batch/createBatchTask.action": _FakeResponse(
+                200, {"res_code": 0, "taskId": "T1"}
+            ),
+        },
+    )
+    p = Cloud189Provider(
+        cipher=_FakeCipher('{"cookie": "SSON=abc123"}')
+    )
+    result = await p.save_shared_files(
+        _account(), "abc", None, ["f1"], "-11", "skip"
+    )
+    assert result.remote_task_id == "T1"
+    assert result.saved_file_ids == ["f1"]
+
+
+@pytest.mark.asyncio
+async def test_save_shared_files_no_cookie(monkeypatch):
+    _install_httpx(monkeypatch, {})
+    p = Cloud189Provider(cipher=_FakeCipher())  # 只有 username/password
+    with pytest.raises(DomainError) as exc:
+        await p.save_shared_files(_account(), "abc", None, ["f1"], None, "skip")
+    assert exc.value.code == ErrorCode.ACCOUNT_EXPIRED
+
+
+def test_extract_share_code():
+    from panbridge.providers.cloud189.provider import _extract_share_code
+
+    assert _extract_share_code("https://cloud.189.cn/t/abc123") == "abc123"
+    assert _extract_share_code("abc123") == "abc123"

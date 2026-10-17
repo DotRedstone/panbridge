@@ -67,6 +67,14 @@ _PLATFORM_PATTERNS: dict[str, tuple[set[str], Pattern[str]]] = {
         {"share.weiyun.com", "www.weiyun.com"},
         re.compile(r"https?://(?:www\.)?(?:share\.)?weiyun\.com/[A-Za-z0-9]+"),
     ),
+    "cloud189": (
+        {"cloud.189.cn", "www.cloud.189.cn"},
+        # 天翼云盘分享：https://cloud.189.cn/t/<code> 或 /web/share?code=<code>
+        re.compile(
+            r"https?://(?:www\.)?cloud\.189\.cn/(?:t/[A-Za-z0-9_-]+"
+            r"|web/share\?code=[A-Za-z0-9_-]+)"
+        ),
+    ),
     "caiyun": (
         {"yun.139.com", "caiyun.139.com", "www.caiyun.139.com"},
         # 移动云盘分享链接：https://yun.139.com/shareweb/#/w/i/<linkID>
@@ -197,6 +205,16 @@ def _share_id_from_url(url: str) -> str:
         if parts:
             return parts[-1]
         raise DomainError(ErrorCode.INVALID_SHARE, "malformed weiyun share URL")
+
+    # 天翼云盘：cloud.189.cn/t/<code> 或 /web/share?code=<code>
+    if "189.cn" in url:
+        m = re.search(r"/t/([A-Za-z0-9_-]+)", url)
+        if m:
+            return m.group(1)
+        m = re.search(r"code=([A-Za-z0-9_-]+)", url)
+        if m:
+            return m.group(1)
+        raise DomainError(ErrorCode.INVALID_SHARE, "malformed cloud189 share URL")
 
     path = urlparse(url).path
     parts = [p for p in path.split("/") if p]

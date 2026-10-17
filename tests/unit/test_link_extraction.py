@@ -129,3 +129,9 @@ def test_extract_wukong_share_path():
     result = extract_share("https://pan.wkbrowser.com/share/xyz789")
     assert result.provider == "wukong"
     assert result.share_id == "xyz789"
+
+
+def test_extract_cloud189_share():
+    result = extract_share("https://cloud.189.cn/t/abc123")
+    assert result.provider == "cloud189"
+    assert result.share_id == "abc123"

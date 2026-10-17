@@ -11,7 +11,7 @@
 | `baidu` | 百度网盘 | ✅ | ⚠️(需Cookie) | ⚠️(需Cookie) | ⚠️(需Cookie) | BDUSS Cookie | ✅ 匿名列表+Mock |
 | `115` | 115 网盘 | ✅ | ⚠️(需Cookie) | ⚠️(需Cookie) | ✅(需Cookie) | Cookie | ✅ 匿名解析+Mock |
 | `pikpak` | PikPak | ✅ | ✅ | ⚠️(需账号) | ⚠️(需账号) | 无需登录(分享) | ✅ 协议+Mock |
-| `cloud189` | 天翼云盘 | ❌ | ❌ | ❌ | ✅ | 账号密码 | ⚠️ SDK 文件列表+Mock |
+| `cloud189` | 天翼云盘 | ✅ | ⚠️(需登录) | ⚠️(需登录) | ✅ | 账号密码 / SSON Cookie | ⚠️ 协议+Mock |
 | `caiyun` | 中国移动云盘 | ⚠️(需登录) | ❌ | ⚠️(需登录) | ✅ | Authorization(Basic) | ⚠️ 协议+Mock |
 | `uc` | UC 网盘 | ⚠️(需登录) | ⚠️(需登录) | ⚠️(需登录) | ✅ | Cookie | ⚠️ 协议+Mock |
 | `xunlei` | 迅雷云盘 | ⚠️(需登录) | ⚠️(需登录) | ⚠️(需登录) | ✅ | refresh_token | ⚠️ 协议+Mock |
@@ -48,6 +48,7 @@
 | `weiyun` | 自研 HTTP Adapter | WeiyunShareView(NoLogin) 解析 → WeiyunSharePartSaveData 转存 | 真实分享解析/转存 |
 | `guangya` | 自研 HTTP Adapter | access_token/refresh_token → /drive/v1/share 解析 → /drive/v1/share/restore 转存 → /drive/v1/files 列表 | 真实分享解析/转存/下载 |
 | `wukong` | 自研 HTTP Adapter | Cookie/token → /api/v1/share/info 解析 → /api/v1/share/save 转存 → /api/v1/file/download 直链 | 真实分享解析/转存/下载 |
+| `cloud189` | 自研 HTTP Adapter | getShareInfoByCodeV2 解析 → checkAccessCode 校验 → listShareDir 列表 → createBatchTask 转存 → getNewVlcVideoPlayUrl 直链 | 真实分享解析/转存/下载 |
 
 ### 基于成熟 SDK（MIT）
 
@@ -56,7 +57,7 @@
 | `quark` | quarkpan | 分享解析/转存/下载/扫码登录 | 转存/下载端到端 |
 | `aliyun` | aligo | 分享解析/转存/下载 | 转存/refresh_token 登录 |
 | `115` | p115client | 分享解析(匿名)/转存/下载/文件列表 | 转存/下载端到端 |
-| `cloud189` | cloud189 | 账号文件列表/下载 | 分享解析(不支持) |
+| `cloud189` | cloud189 | 账号文件列表/下载（分享解析/转存走自研 HTTP） | 分享解析/转存端到端 |
 
 ## 参考项目评估与许可证合规
 
@@ -70,6 +71,7 @@
 | [netdisk-fast-download](https://github.com/qaiu/netdisk-fast-download) | MIT | 仅参考协议 | ✅ 参考蓝奏云/123/UC 协议思路，代码独立编写 |
 | [baidu-parse](https://github.com/xb18/baidu-parse) | MIT | 仅参考协议 | ✅ 参考百度 wxlist/sharedownload 协议，代码独立编写 |
 | [bddisk-shell](https://github.com/Cra1gTucker/bddisk-shell) | MIT | 仅参考协议 | ✅ 参考百度 share/transfer 转存协议，代码独立编写 |
+| [cloud189-auto-save](https://github.com/josbu/cloud189-auto-save) | MIT | 仅参考协议 | ✅ 参考天翼云盘分享解析/转存协议，代码独立编写 |
 | [alist](https://github.com/alist-org/alist) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考 123/PikPak 协议思路 |
 | [OpenList](https://github.com/OpenListTeam/OpenList) | AGPL-3.0 | **仅参考协议** | ⚠️ 不可复制代码（AGPL 传染），仅参考微云驱动协议思路 |
 | [weiyun-sdk-go](https://github.com/foxxorcat/weiyun-sdk-go) | Apache-2.0 | 仅参考协议 | ✅ 参考微云账号文件操作协议（无分享解析/转存） |
