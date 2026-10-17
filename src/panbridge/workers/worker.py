@@ -107,20 +107,38 @@ class Worker:
         account = None
         saved_file_ids: list[str] = []
 
+        # 转存目标目录：若未指定，则创建独立文件夹，避免污染根目录、
+        # 避免与账号现有同名文件冲突。
+        destination = task.destination
+
         if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
             account = await self._get_account(task.account_id)
             await self._set_status(task.id, TaskStatus.SAVING)
+
+            if not destination:
+                folder_name = f"panbridge-{task.id[:8]}"
+                try:
+                    destination = await provider.create_folder(
+                        account, folder_name, "0"
+                    )
+                except DomainError as exc:
+                    if exc.code == ErrorCode.UNSUPPORTED_OPERATION:
+                        # 平台不支持创建文件夹，回退到根目录（明确记录）
+                        destination = "0"
+                    else:
+                        raise
+
             transfer = await provider.save_shared_files(
                 account,
                 extracted.share_id,
                 extracted.password,
                 selected,
-                task.destination,
+                destination,
                 task.on_conflict.value,
             )
             saved_file_ids = transfer.saved_file_ids
             if task.action == Action.SAVE:
-                return {"saved": saved_file_ids}
+                return {"saved": saved_file_ids, "destination": destination}
 
         if task.action in (Action.DOWNLOAD, Action.SAVE_AND_DOWNLOAD):
             if self.downloader is None:
@@ -140,9 +158,15 @@ class Worker:
                 else:
                     names = [name_by_fid.get(f, f) for f in selected]
                     resolved = await provider.resolve_saved_file_ids(
-                        account, task.destination, names
+                        account, destination, names
                     )
-                    download_file_ids = resolved or selected
+                    if not resolved:
+                        raise DomainError(
+                            ErrorCode.DOWNLOAD_FAILED,
+                            "cannot resolve saved file IDs after transfer",
+                            retryable=False,
+                        )
+                    download_file_ids = resolved
 
             downloaded = await self._download_files(
                 provider, account, download_file_ids, name_by_fid

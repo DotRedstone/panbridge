@@ -58,6 +58,7 @@ class QuarkProvider(ShareProvider):
             "list_account_files",
             "get_download_info",
             "validate_account",
+            "create_folder",
         }
     )
 
@@ -269,7 +270,9 @@ class QuarkProvider(ShareProvider):
 
         夸克转存是异步任务，完成后文件出现在目标目录，
         具有新的 fid（与分享源 fid 不同）。下载必须用新 fid。
-        注意：此字段结构需真实账号验证（见 docs/providers.md）。
+
+        同名误匹配防护：若目标目录中某个源文件名匹配到多个文件，
+        无法确定唯一新 fid，则抛出错误而非静默选错（避免下错文件）。
         """
         client = self._client_for(account)
         try:
@@ -282,11 +285,62 @@ class QuarkProvider(ShareProvider):
         # list_files 返回原始 dict，需先转换为 ShareFile
         files = self._extract_files(result)
         name_set = set(names)
-        resolved: list[str] = []
+        by_name: dict[str, list[str]] = {}
         for item in files:
             if item.name in name_set and not item.is_dir:
-                resolved.append(item.file_id)
+                by_name.setdefault(item.name, []).append(item.file_id)
+
+        resolved: list[str] = []
+        for name in names:
+            candidates = by_name.get(name, [])
+            if len(candidates) == 1:
+                resolved.append(candidates[0])
+            elif len(candidates) > 1:
+                # 同名文件多个，无法确定哪个是刚转存的
+                raise DomainError(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"ambiguous file name after save: {name!r} matched "
+                    f"{len(candidates)} files; use a dedicated empty folder",
+                    retryable=False,
+                )
+            # len(candidates) == 0：该文件未转存成功，跳过
         return resolved
+
+    async def create_folder(
+        self, account: Account, name: str, parent_id: str = "0"
+    ) -> str:
+        """在账号网盘创建目录，返回新目录 fid。
+
+        用于转存到独立目录，避免污染根目录、避免同名文件冲突。
+        """
+        client = self._client_for(account)
+        try:
+            result = await self._run(
+                client, lambda: client.create_folder(name, parent_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise self._map_quark_error(exc) from exc
+
+        if not isinstance(result, dict) or result.get("status") != 200:
+            msg = (
+                result.get("message", "未知错误")
+                if isinstance(result, dict)
+                else "无响应"
+            )
+            raise DomainError(
+                ErrorCode.INTERNAL_ERROR,
+                f"quark create_folder failed: {msg}",
+                retryable=False,
+            )
+        data = result.get("data")
+        fid = data.get("fid") if isinstance(data, dict) else None
+        if not fid:
+            raise DomainError(
+                ErrorCode.INTERNAL_ERROR,
+                "quark create_folder returned no fid",
+                retryable=False,
+            )
+        return str(fid)
 
     async def list_account_files(
         self, account: Account, parent_id: str | None = None

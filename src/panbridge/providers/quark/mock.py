@@ -32,6 +32,7 @@ class MockProvider(ShareProvider):
             "list_account_files",
             "get_download_info",
             "validate_account",
+            "create_folder",
         }
     )
 
@@ -92,6 +93,11 @@ class MockProvider(ShareProvider):
             saved_file_ids=saved,
             remote_task_id=f"mock-remote-{share_id}",
         )
+
+    async def create_folder(
+        self, account: Account, name: str, parent_id: str = "0"
+    ) -> str:
+        return f"mock-folder-{name}"
 
     async def list_account_files(
         self, account: Account, parent_id: str | None = None

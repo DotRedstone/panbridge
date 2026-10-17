@@ -64,8 +64,11 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return result
 
 
-def _resolve_config() -> tuple[str, str, str]:
-    """解析 Cookie、主密钥、分享链接。优先环境变量，其次 .env.quark。"""
+def _resolve_config() -> tuple[str, str, str, str]:
+    """解析 Cookie、主密钥、分享链接、可选目标目录 fid。
+
+    优先环境变量，其次 .env.quark。
+    """
     env_file = _load_env_file(Path(__file__).resolve().parent.parent / ".env.quark")
 
     cookie = os.environ.get("PANBRIDGE_QUARK_COOKIE") or env_file.get(
@@ -76,6 +79,9 @@ def _resolve_config() -> tuple[str, str, str]:
     )
     share = os.environ.get("PANBRIDGE_QUARK_SHARE") or env_file.get(
         "PANBRIDGE_QUARK_SHARE", ""
+    )
+    dest_fid = os.environ.get("PANBRIDGE_QUARK_DEST_FID") or env_file.get(
+        "PANBRIDGE_QUARK_DEST_FID", ""
     )
 
     if not cookie:
@@ -94,11 +100,11 @@ def _resolve_config() -> tuple[str, str, str]:
             "请提供一个有效夸克分享链接（含提取码，如："
             "https://pan.quark.cn/s/xxxx 提取码: xxxx）。"
         )
-    return cookie, secret, share
+    return cookie, secret, share, dest_fid
 
 
 async def main() -> None:
-    cookie, secret, share_text = _resolve_config()
+    cookie, secret, share_text, dest_fid = _resolve_config()
 
     # 解析分享链接，得到 provider / share_id / password
     extracted = extract_share(share_text)
@@ -165,22 +171,30 @@ async def main() -> None:
             f"size={target.get('size')} file_id={target['file_id']}"
         )
 
-        # ---- Step 3: save_and_download（转存到账号根目录，再下载）----
+        # ---- Step 3: save_and_download ----
         # 注意：夸克「直接下载分享源文件」需要先转存到自己网盘，
         # 下载必须用转存后的新 fid。因此用 save_and_download 一个动作
         # 完成「转存 → 解析新 fid → 下载」的完整链路。
-        # destination 为目标目录 fid，"0" 表示根目录（不创建子目录，
-        # 避免污染；转存的是分享源文件，不会覆盖账号原有文件）。
+        #
+        # destination 策略：
+        # - 不指定（默认）：Worker 会自动创建独立文件夹（panbridge-<task前缀>），
+        #   转存到该文件夹，避免污染根目录、避免同名文件冲突。
+        # - 指定 PANBRIDGE_QUARK_DEST_FID：使用你提供的已有空文件夹 fid，
+        #   不会静默回退到根目录。
         task = await service.create_task(
             CreateTaskInput(
                 text=share_text,
                 action=Action.SAVE_AND_DOWNLOAD,
                 account_id=account.id,
                 selection=[target["file_id"]],
-                destination="0",
+                destination=dest_fid or None,  # 空则自动创建独立文件夹
             )
         )
         print(f"[step3] save_and_download 任务已创建：task_id={task.id}")
+        if dest_fid:
+            print(f"[step3] 使用指定目标目录 fid={dest_fid}")
+        else:
+            print("[step3] 将自动创建独立文件夹进行转存")
 
         # ---- 等待任务完成 ----
         result = None

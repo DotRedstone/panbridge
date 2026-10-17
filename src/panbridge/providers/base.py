@@ -91,6 +91,21 @@ class ShareProvider(ABC):
         """
         return []
 
+    async def create_folder(
+        self, account: Account, name: str, parent_id: str = "0"
+    ) -> str:
+        """在账号网盘创建目录，返回新目录的 fid。
+
+        默认不支持（UNSUPPORTED_OPERATION）。支持转存到独立目录的平台
+        应实现此方法，避免转存污染根目录。
+        """
+        from panbridge.domain.errors import DomainError, ErrorCode
+
+        raise DomainError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            f"provider {self.name} does not support creating folders",
+        )
+
 
 def provider_supports(provider: ShareProvider, capability: str) -> bool:
     return capability in provider.capabilities

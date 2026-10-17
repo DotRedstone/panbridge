@@ -101,6 +101,21 @@ uv run pytest
 uv run ruff check src tests
 ```
 
+### 真实夸克端到端测试（可选，需要真实账号）
+
+本地一条命令跑通 `inspect → 转存 → 下载`，自动创建独立文件夹，不污染网盘根目录：
+
+```bash
+cp scripts/quark.env.example .env.quark   # 填入 Cookie、主密钥、有效分享链接
+uv run python scripts/e2e_quark.py        # 一条命令完成端到端验证
+```
+
+- Cookie 只从本地 `.env.quark` 读取，**不会打印到日志**。
+- 默认自动创建独立文件夹转存；也可在 `.env.quark` 指定已有空文件夹 `PANBRIDGE_QUARK_DEST_FID`。
+- 只转存分享中的**第一个非目录文件**，不删除/覆盖账号原有内容。
+
+详见 [docs/providers.md](docs/providers.md)。
+
 ## 文档
 
 - [架构设计](docs/architecture.md)

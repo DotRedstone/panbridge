@@ -215,3 +215,73 @@ async def test_get_download_info_reads_file_info_name(quark, cipher, monkeypatch
     info = await provider.get_download_info(acct, "new1")
     assert info["url"] == "https://download.example.com/x"
     assert info["name"] == "real-name.bin"
+    # 下载 headers 应包含 Referer，且不含 Cookie
+    assert "headers" in info
+    assert info["headers"]["Referer"] == "https://pan.quark.cn/"
+    assert "Cookie" not in info["headers"]
+
+
+class _CreateFolderClient:
+    def create_folder(self, name, parent_id="0"):
+        return {"status": 200, "data": {"fid": f"dir-{name}"}}
+
+
+@pytest.mark.asyncio
+async def test_create_folder_returns_fid(quark, cipher, monkeypatch):
+    provider = QuarkProvider(cipher=cipher)
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    monkeypatch.setattr(provider, "_client_for", lambda a: _CreateFolderClient())
+    fid = await provider.create_folder(acct, "test-dir", "0")
+    assert fid == "dir-test-dir"
+
+
+@pytest.mark.asyncio
+async def test_create_folder_error_maps(quark, cipher, monkeypatch):
+    from quark_client.exceptions import APIError
+
+    provider = QuarkProvider(cipher=cipher)
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+
+    class _Fail:
+        def create_folder(self, name, parent_id="0"):
+            raise APIError("HTTP错误: 404")
+
+    monkeypatch.setattr(provider, "_client_for", lambda a: _Fail())
+    with pytest.raises(DomainError) as exc:
+        await provider.create_folder(acct, "x", "0")
+    assert exc.value.code == ErrorCode.INVALID_SHARE
+
+
+@pytest.mark.asyncio
+async def test_resolve_saved_file_ids_ambiguous_raises(quark, cipher, monkeypatch):
+    """同名文件匹配到多个时，必须报错而非静默选错。"""
+    provider = QuarkProvider(cipher=cipher)
+    fake = _FakeQuarkClient(
+        files=[
+            {"fid": "old1", "file_name": "a.txt", "dir": False},
+            {"fid": "new1", "file_name": "a.txt", "dir": False},
+        ],
+        file_info={},
+        download_url="",
+    )
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    monkeypatch.setattr(provider, "_client_for", lambda a: fake)
+    with pytest.raises(DomainError) as exc:
+        await provider.resolve_saved_file_ids(acct, "0", ["a.txt"])
+    assert exc.value.code == ErrorCode.INTERNAL_ERROR
+    assert "ambiguous" in exc.value.message

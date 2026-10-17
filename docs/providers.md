@@ -55,11 +55,12 @@
 3. **账号校验**：`validate_account` 用账号 Cookie 实际调用 `get_storage_info`（capacity 接口）验证，而非 QuarkPan 的 `is_logged_in()`（后者检查本地 `cookies.json` 文件，与账号 Cookie 无关）。
 4. **错误映射**：`AuthenticationError` → `ACCOUNT_EXPIRED`；404/不存在/失效 → `INVALID_SHARE`；空间/容量 → `QUOTA_EXCEEDED`；验证码/风控 → `ACTION_REQUIRED`；密码/提取码 → `INVALID_PASSWORD`。
 5. **转存后文件 ID 衔接**：夸克转存是异步任务，文件在账号网盘获得**新 fid**（与分享源 fid 不同）。`save_shared_files` 只返回 `task_id`（用于幂等确认），不返回新 fid。`save_and_download` 流程通过 `resolve_saved_file_ids` 从目标目录按文件名重新查询新 fid 后再下载。**该字段结构需真实账号验证**。
-   - ⚠️ **已知限制**：`resolve_saved_file_ids` 按文件名精确匹配，若目标目录存在**同名文件**（例如之前转存过同名文件），可能误匹配到旧文件。测试时请使用目标目录无同名文件的分享。
-6. **纯下载的限制**：夸克**不支持不转存直接下载分享源文件**——`get_download_url`（`file/download`）需要的是**账号网盘里的 fid**，而非分享源 fid。因此 `DOWNLOAD` 动作对夸克通常不可用，应使用 `save_and_download`（先转存再下载）。
-7. **下载 headers**：夸克 CDN 可能校验 `Referer`，`get_download_info` 返回下载所需 headers（`Referer: https://pan.quark.cn/` + 常见 `User-Agent`），Worker 下载时透传。**不含 Cookie**（下载 URL 已带签名，且凭据不得外泄）。
-8. **destination 语义**：`destination` 是夸克目标目录的 **fid**（`"0"` 表示根目录），不是目录名。当前 MVP 不自动创建子目录。
-9. **不伪造**：所有请求字段以 QuarkPan 源码为准（已逐条核对 `share_service.py`、`file_service.py`、`file_download_service.py`、`client.py`、`auth/login.py`）。
+   - **同名误匹配防护**：若目标目录中某个源文件名匹配到**多个**文件，`resolve_saved_file_ids` 会明确抛出 `INTERNAL_ERROR`（ambiguous），**不会静默选错**。配合「转存到独立空文件夹」可从根本上避免同名冲突。
+6. **转存目标目录（create_folder）**：`QuarkProvider` 实现 `create_folder`（调用夸克 `file` 接口，返回新目录 fid）。当任务未指定 `destination` 时，Worker 自动创建 `panbridge-<task前缀>` 独立文件夹，转存到该文件夹内，**避免污染根目录、避免与账号现有同名文件冲突**。若平台不支持创建文件夹（`UNSUPPORTED_OPERATION`），则回退到根目录 `"0"` 并明确记录。
+7. **纯下载的限制**：夸克**不支持不转存直接下载分享源文件**——`get_download_url`（`file/download`）需要的是**账号网盘里的 fid**，而非分享源 fid。因此 `DOWNLOAD` 动作对夸克通常不可用，应使用 `save_and_download`（先转存再下载）。
+8. **下载 headers**：夸克 CDN 可能校验 `Referer`，`get_download_info` 返回下载所需 headers（`Referer: https://pan.quark.cn/` + 常见 `User-Agent`），Worker 下载时透传。**不含 Cookie**（下载 URL 已带签名，且凭据不得外泄）。
+9. **destination 语义**：`destination` 是夸克目标目录的 **fid**（`"0"` 表示根目录），不是目录名。为空时自动创建独立文件夹（见第 6 点）。
+10. **不伪造**：所有请求字段以 QuarkPan 源码为准（已逐条核对 `share_service.py`、`file_service.py`、`file_download_service.py`、`client.py`、`auth/login.py`、`cli/commands/basic_fileops.py`）。
 
 ### 已验证情况（诚实声明）
 

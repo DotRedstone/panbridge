@@ -155,3 +155,71 @@ async def test_save_and_download_lifecycle(env, tmp_path):
     assert result.status == TaskStatus.COMPLETED
     # 转存了 2 个非目录文件，下载器应收到 2 次调用
     assert len(fake.calls) == 2
+
+
+class _RecordingMockProvider(MockProvider):
+    """记录 create_folder 调用，验证「未指定 destination 自动建文件夹」。"""
+
+    def __init__(self):
+        self.created_folders: list[tuple[str, str]] = []
+        self.saved_destinations: list[str] = []
+
+    async def create_folder(self, account, name, parent_id="0"):
+        self.created_folders.append((name, parent_id))
+        return f"dir-{name}"
+
+    async def save_shared_files(
+        self, account, share_id, password, file_ids, destination, on_conflict
+    ):
+        self.saved_destinations.append(destination or "")
+        return await super().save_shared_files(
+            account, share_id, password, file_ids, destination, on_conflict
+        )
+
+
+@pytest.mark.asyncio
+async def test_save_auto_creates_folder_when_no_destination(tmp_path):
+    """未指定 destination 时，Worker 应自动创建独立文件夹再转存。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    provider = _RecordingMockProvider()
+    registry = ProviderRegistry()
+    registry.register(provider)
+
+    downloader = _FakeDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    async with session_scope(sessionmaker) as session:
+        from panbridge.domain.models import Account
+
+        await AccountRepository(session).add(
+            Account(id="acc1", provider="mock", label="t")
+        )
+
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.SAVE_AND_DOWNLOAD,
+            account_id="acc1",
+            # 不指定 destination
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    assert result.status == TaskStatus.COMPLETED
+
+    # 应创建了文件夹，且转存用了该文件夹 fid（而非根目录 "0"）
+    assert len(provider.created_folders) == 1
+    assert provider.saved_destinations[0].startswith("dir-panbridge-")
+
+    await worker.stop()
+    await engine.dispose()
