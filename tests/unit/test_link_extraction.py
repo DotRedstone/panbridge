@@ -52,7 +52,8 @@ def test_empty_text_raises():
 def test_extract_123pan_with_dash_password():
     result = extract_share("https://www.123pan.com/s/abc-1234")
     assert result.provider == "123"
-    assert result.share_id == "abc"
+    # share_id 保留完整短码（含 -提取码），由 Provider 短码解析接口处理
+    assert result.share_id == "abc-1234"
     assert result.password == "1234"
 
 

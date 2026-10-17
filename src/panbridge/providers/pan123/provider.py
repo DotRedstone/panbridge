@@ -4,16 +4,16 @@
 （不依赖第三方 SDK）。协议参考公开的逆向资料与 AList 的 123_share 驱动
 （AGPL，仅参考协议思路，代码为本项目独立编写）。
 
-核心协议（已公开，无需登录即可解析分享）：
-1. 请求签名：`signPath(path, os="web", version="3")` 用 CRC32 计算
-   `timeSign` 与 `dataSign`，拼成 query 参数 `<k>=<timestamp>-<random>-<dataSign>`，
-   其中 k 是 timeSign 的十进制字符串。
-2. 分享文件列表：
-   GET `https://yun.123pan.com/b/api/share/get`
-   query: shareKey, SharePwd, parentFileId, limit, next, orderBy,
-          orderDirection, Page
+核心协议（已公开，无需登录即可解析分享；2026-10 实测确认当前生效版）：
+1. 分享短码解析：`GET https://www.123pan.cn/gsb/s/share-key?shareKey=<完整短码>`
+   → `info.data.UserID`。短码形如 `A6cA-I24Jh`（shareKey 与提取码连字符拼接）。
+2. 分享文件列表（匿名，新域名）：分享者个性化域名
+   `GET https://<uid>.share.123pan.cn/api/share/get`
+   query: shareKey, SharePwd, ParentFileId, limit, next, orderBy,
+          orderDirection, Page, operateType, OrderId, superAdmin
+   → data.InfoList[]（字段为大写驼峰 FileId/FileName/Type/Size）。
 3. 下载直链：
-   POST `https://yun.123pan.com/b/api/share/download/info`
+   POST `/api/share/download/info`
    body: {shareKey, SharePwd, etag, fileId, s3keyFlag, size}
    返回 data.DownloadURL，其 `params` 参数为 base64 编码的真实直链。
 
@@ -45,12 +45,14 @@ from panbridge.domain.models import (
 from panbridge.infrastructure.crypto import CredentialCipher
 from panbridge.providers.base import ShareProvider
 
-_API_HOST = "https://yun.123pan.com"
-_BApi = _API_HOST + "/b/api"
+# 分享短码解析域名（/gsb/s/share-key）
+_SHARE_ROOT = "https://www.123pan.cn"
+_GSB_SHARE_KEY = _SHARE_ROOT + "/gsb/s/share-key"
+_BApi = _SHARE_ROOT + "/api"
 
 _HEADERS = {
-    "origin": "https://yun.123pan.com",
-    "referer": "https://yun.123pan.com/",
+    "origin": "https://www.123pan.cn",
+    "referer": "https://www.123pan.cn/",
     "user-agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -135,27 +137,38 @@ class Pan123Provider(ShareProvider):
 
     @staticmethod
     def _map_share_item(raw: dict[str, Any]) -> ShareFile:
-        is_dir = int(raw.get("type", 0)) == 1
+        # 123 云盘分享列表字段为大写驼峰（FileId/FileName/Type/Size）。
+        is_dir = int(raw.get("Type", raw.get("type", 0))) == 1
         return ShareFile(
-            file_id=str(raw.get("fileId", "")),
-            name=raw.get("filename", ""),
+            file_id=str(raw.get("FileId", raw.get("fileId", ""))),
+            name=raw.get("FileName", raw.get("filename", "")),
             is_dir=is_dir,
-            size=raw.get("size"),
-            parent_id=str(raw.get("parentFileId", "")),
+            size=raw.get("Size", raw.get("size")),
+            parent_id=str(
+                raw.get("ParentFileId", raw.get("parentFileId", ""))
+            ),
         )
 
     @staticmethod
     def _map_error(data: dict[str, Any], status_code: int = 200) -> DomainError:
         code = data.get("code")
         msg = str(data.get("message", ""))
+        low = msg.lower()
         # 123 云盘常见错误码
-        if code == 404 or "不存在" in msg or "失效" in msg or "已删除" in msg:
+        if (
+            code == 404
+            or "不存在" in msg
+            or "失效" in msg
+            or "已删除" in msg
+            or "invalid" in low
+            or "not found" in low
+        ):
             return DomainError(ErrorCode.INVALID_SHARE, "123 share invalid")
-        if "密码" in msg or "提取码" in msg or "pwd" in msg.lower():
+        if "密码" in msg or "提取码" in msg or "pwd" in low:
             return DomainError(
                 ErrorCode.INVALID_PASSWORD, "123 share password incorrect"
             )
-        if code == 401 or "token" in msg.lower():
+        if code == 401 or "token" in low:
             return DomainError(
                 ErrorCode.ACCOUNT_EXPIRED, "123 token invalid", retryable=False
             )
@@ -169,23 +182,70 @@ class Pan123Provider(ShareProvider):
             retryable=True,
         )
 
+    async def _resolve_share_uid(self, share_key: str) -> str:
+        """解析分享短码 → 分享者 UserID（用于构造个性化域名）。
+
+        完整短码形如 `A6cA-I24Jh`（shareKey 与提取码连字符拼接）。
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                _GSB_SHARE_KEY,
+                params={"shareKey": share_key},
+                headers=_HEADERS,
+            )
+        if resp.status_code != 200:
+            raise DomainError(
+                ErrorCode.INVALID_SHARE,
+                f"123 share-key returned {resp.status_code}",
+            )
+        data = resp.json()
+        info = data.get("info", {})
+        if info.get("code") != 0:
+            raise self._map_error(info, resp.status_code)
+        uid = (info.get("data") or {}).get("UserID")
+        if not uid:
+            raise DomainError(
+                ErrorCode.INVALID_SHARE, "123 share-key missing UserID"
+            )
+        return str(uid)
+
     async def _get_share_files(
         self, share_key: str, password: str | None, parent_id: str = "0"
     ) -> list[ShareFile]:
-        """匿名获取分享文件列表（分页）。"""
+        """匿名获取分享文件列表（分页）。
+
+        流程：完整短码 → UserID → 个性化域名 /api/share/get。
+        share_key 为完整短码（含 `-提取码`），password 为提取码（可选，
+        仅当短码尾部为 1-4 位提取码时传入；否则为空）。
+        """
+        full_key = share_key
+        if password and "-" not in share_key:
+            full_key = f"{share_key}-{password}"
+
+        uid = await self._resolve_share_uid(full_key)
+        host = f"https://{uid}.share.123pan.cn"
         params = {
             "limit": "100",
             "next": "0",
             "orderBy": "file_id",
             "orderDirection": "desc",
-            "parentFileId": parent_id,
-            "Page": "1",
-            "shareKey": share_key,
+            "shareKey": full_key,
             "SharePwd": password or "",
+            "ParentFileId": parent_id,
+            "Page": "1",
+            "operateType": "1",
+            "OrderId": "",
+            "superAdmin": "false",
         }
-        url = _signed_url(_BApi + "/share/get")
+        headers = {
+            **_HEADERS,
+            "origin": host,
+            "referer": f"{host}/s/{full_key}",
+        }
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, params=params, headers=_HEADERS)
+            resp = await client.get(
+                f"{host}/api/share/get", params=params, headers=headers
+            )
         if resp.status_code != 200:
             raise DomainError(
                 ErrorCode.INVALID_SHARE,
@@ -193,7 +253,7 @@ class Pan123Provider(ShareProvider):
             )
         data = resp.json()
         if data.get("code") not in (0, 200):
-            raise self._map_error(data)
+            raise self._map_error(data, resp.status_code)
         items = data.get("data", {}).get("InfoList", [])
         return [self._map_share_item(it) for it in items]
 

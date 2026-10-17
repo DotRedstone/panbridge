@@ -44,11 +44,29 @@ class _FakeAsyncClient:
         return _FakeResponse(404, {"code": 404, "message": "not found"})
 
 
+def _share_routes(files: list[dict]):
+    return {
+        "/gsb/s/share-key": _FakeResponse(
+            200, {"info": {"code": 0, "data": {"UserID": 1625770}}}
+        ),
+        "/api/share/get": _FakeResponse(
+            200, {"code": 0, "data": {"InfoList": files}}
+        ),
+    }
+
+
+def _install(monkeypatch, routes):
+    import panbridge.providers.pan123.provider as mod
+
+    def fake_client(*a, **k):
+        return _FakeAsyncClient(routes)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
+
+
 def test_sign_path_deterministic_shape():
     key, value = _sign_path("/b/api/share/get")
-    # key 是 timeSign 十进制串
     assert key.isdigit()
-    # value 是 <timestamp>-<random>-<dataSign>
     parts = value.split("-")
     assert len(parts) == 3
     assert all(p.isdigit() for p in parts)
@@ -62,40 +80,27 @@ def test_signed_url_appends_query():
 
 @pytest.mark.asyncio
 async def test_inspect_share_maps_files(monkeypatch):
-    import panbridge.providers.pan123.provider as mod
-
-    routes = {
-        "/b/api/share/get": _FakeResponse(
-            200,
-            {
-                "code": 0,
-                "data": {
-                    "InfoList": [
-                        {
-                            "fileId": 1001,
-                            "filename": "a.zip",
-                            "type": 0,
-                            "size": 2048,
-                            "etag": "e1",
-                            "s3keyFlag": "f1",
-                        },
-                        {
-                            "fileId": 1002,
-                            "filename": "dir",
-                            "type": 1,
-                            "size": 0,
-                        },
-                    ]
+    _install(
+        monkeypatch,
+        _share_routes(
+            [
+                {
+                    "FileId": 1001,
+                    "FileName": "a.zip",
+                    "Type": 0,
+                    "Size": 2048,
+                    "Etag": "e1",
+                    "S3KeyFlag": "f1",
                 },
-            },
-        )
-    }
-
-    def fake_client(*a, **k):
-        return _FakeAsyncClient(routes)
-
-    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
-
+                {
+                    "FileId": 1002,
+                    "FileName": "dir",
+                    "Type": 1,
+                    "Size": 0,
+                },
+            ]
+        ),
+    )
     p = Pan123Provider(cipher=None)
     share = await p.inspect_share("abc123", None)
     assert len(share.files) == 2
@@ -107,19 +112,15 @@ async def test_inspect_share_maps_files(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_inspect_share_invalid_password(monkeypatch):
-    import panbridge.providers.pan123.provider as mod
-
     routes = {
-        "/b/api/share/get": _FakeResponse(
+        "/gsb/s/share-key": _FakeResponse(
+            200, {"info": {"code": 0, "data": {"UserID": 1625770}}}
+        ),
+        "/api/share/get": _FakeResponse(
             200, {"code": 500, "message": "提取码错误"}
-        )
+        ),
     }
-
-    def fake_client(*a, **k):
-        return _FakeAsyncClient(routes)
-
-    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
-
+    _install(monkeypatch, routes)
     p = Pan123Provider(cipher=None)
     with pytest.raises(DomainError) as exc:
         await p.inspect_share("abc123", "wrong")
@@ -128,19 +129,15 @@ async def test_inspect_share_invalid_password(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_inspect_share_not_found(monkeypatch):
-    import panbridge.providers.pan123.provider as mod
-
     routes = {
-        "/b/api/share/get": _FakeResponse(
+        "/gsb/s/share-key": _FakeResponse(
+            200, {"info": {"code": 0, "data": {"UserID": 1625770}}}
+        ),
+        "/api/share/get": _FakeResponse(
             200, {"code": 404, "message": "分享不存在"}
-        )
+        ),
     }
-
-    def fake_client(*a, **k):
-        return _FakeAsyncClient(routes)
-
-    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
-
+    _install(monkeypatch, routes)
     p = Pan123Provider(cipher=None)
     with pytest.raises(DomainError) as exc:
         await p.inspect_share("abc123", None)
@@ -148,15 +145,27 @@ async def test_inspect_share_not_found(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_inspect_share_invalid_key(monkeypatch):
+    routes = {
+        "/gsb/s/share-key": _FakeResponse(
+            200, {"info": {"code": 3, "message": "shareKey is invalid"}}
+        )
+    }
+    _install(monkeypatch, routes)
+    p = Pan123Provider(cipher=None)
+    with pytest.raises(DomainError) as exc:
+        await p.inspect_share("badkey", None)
+    assert exc.value.code == ErrorCode.INVALID_SHARE
+
+
+@pytest.mark.asyncio
 async def test_resolve_download_url_base64(monkeypatch):
     import base64
-
-    import panbridge.providers.pan123.provider as mod
 
     real_url = "https://download.cdn.example.com/file.zip"
     encoded = base64.b64encode(real_url.encode()).decode()
     routes = {
-        "/b/api/share/download/info": _FakeResponse(
+        "/api/share/download/info": _FakeResponse(
             200,
             {
                 "code": 0,
@@ -166,12 +175,7 @@ async def test_resolve_download_url_base64(monkeypatch):
             },
         )
     }
-
-    def fake_client(*a, **k):
-        return _FakeAsyncClient(routes)
-
-    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
-
+    _install(monkeypatch, routes)
     p = Pan123Provider(cipher=None)
     url = await p.resolve_share_download_url(
         "abc", None, {"fileId": 1001, "etag": "e", "s3keyFlag": "f", "size": 10}

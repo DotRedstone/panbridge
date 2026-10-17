@@ -127,8 +127,9 @@ _PASSWORD_PATTERNS: list[tuple[Pattern[str], int]] = [
     (re.compile(rf"{_PASSWORD_LABEL}\s*[是为]\s*([A-Za-z0-9]{{4,8}})"), 1),
     # 百度网盘：?pwd=xxxx 或 &pwd=xxxx
     (re.compile(r"[?&]pwd=([A-Za-z0-9]{4,8})"), 1),
-    # 123 网盘：链接尾部 -xxxx 形式（/s/abc-1234）
-    (re.compile(r"/([A-Za-z0-9]+)-([A-Za-z0-9]{4,8})$"), 2),
+    # 123 网盘：链接尾部 -xxxx 形式（/s/abc-1234），提取码为 1-4 位。
+    # 超过 4 位（如 A6cA-I24Jh 的 I24Jh）是分享定位符，非提取码。
+    (re.compile(r"/([A-Za-z0-9]+)-([A-Za-z0-9]{1,4})$"), 2),
 ]
 
 
@@ -220,11 +221,9 @@ def _share_id_from_url(url: str) -> str:
     parts = [p for p in path.split("/") if p]
     if len(parts) >= 2 and parts[-2] in ("s", "share"):
         raw = parts[-1]
-        # 123 网盘 share_id 尾部可能带 -密码 后缀，去掉它
-        if "-" in raw:
-            left, right = raw.rsplit("-", 1)
-            if 4 <= len(right) <= 8 and left:
-                return left
+        # 123 网盘 share_id 保留完整短码（如 A6cA-I24Jh），
+        # 连字符后可能是提取码（≤4 位）或分享定位符，不在此拆分，
+        # 由 Provider 的短码解析接口（/gsb/s/share-key）统一处理。
         return raw
     raise DomainError(ErrorCode.INVALID_SHARE, "malformed share URL")
 
@@ -236,7 +235,8 @@ def _extract_password(text: str, url: str, provider: str) -> str | None:
     - 百度网盘 `?pwd=xxxx`。
     - 123 网盘 URL 尾部 `-xxxx`（share_id 与密码用连字符拼接）。
     """
-    # 123 网盘：/s/<share_id>-<password> 形式，密码跟在连字符后
+    # 123 网盘：/s/<share_id>-<password> 形式，密码跟在连字符后（1-4 位）。
+    # 超过 4 位（如 A6cA-I24Jh 的 I24Jh）不是提取码，是分享定位符。
     if provider == "123":
         path = urlparse(url).path
         parts = [p for p in path.split("/") if p]
@@ -244,7 +244,7 @@ def _extract_password(text: str, url: str, provider: str) -> str | None:
             raw = parts[-1]
             if "-" in raw:
                 left, right = raw.rsplit("-", 1)
-                if 4 <= len(right) <= 8 and left:
+                if 1 <= len(right) <= 4 and left:
                     return right
 
     for pattern, group_idx in _PASSWORD_PATTERNS:
