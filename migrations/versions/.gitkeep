@@ -1,0 +1,5 @@
+"""Alembic 迁移脚本占位。
+
+MVP 使用 create_all 建表；正式迁移脚本在数据库结构稳定后
+通过 `alembic revision --autogenerate` 生成。
+"""
