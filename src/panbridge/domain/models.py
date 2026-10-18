@@ -81,12 +81,26 @@ class DownloadArtifact:
 
 @dataclass
 class TransferResult:
-    """转存结果。"""
+    """转存结果。
+
+    `saved`：显式的「源 fid → 账号新 fid」映射，逐文件给出，供 Worker
+    严格校验对应关系（不能仅凭数量一致就假设顺序正确）。每项字段：
+      - source_fid：分享源文件 ID
+      - name：文件名
+      - rel_path：相对分享根目录的路径（保留目录结构）
+      - account_fid：转存后账号网盘中的新 fid
+
+    平台能返回明确映射时应填充 `saved`；仅能返回顺序列表时填充
+    `saved_file_ids`（顺序与入参 file_ids 一致）；异步转存时两者皆空，
+    由 Worker 依据 `remote_task_id` 轮询确认后解析。
+    """
 
     saved_file_ids: list[str] = field(default_factory=list)
     failed: list[dict[str, Any]] = field(default_factory=list)
     # 远端任务标识，用于幂等确认，降低重复转存风险。
     remote_task_id: str | None = None
+    # 显式映射（源 fid → 新 fid），可选，用于严格校验。
+    saved: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

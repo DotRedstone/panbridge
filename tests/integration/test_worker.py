@@ -9,6 +9,7 @@ import pytest_asyncio
 
 from panbridge.application.service import ApplicationService, CreateTaskInput
 from panbridge.domain.enums import Action, TaskStatus
+from panbridge.domain.models import Account, ShareFile
 from panbridge.downloads.http import HttpDownloader
 from panbridge.persistence import (
     AccountRepository,
@@ -273,8 +274,16 @@ async def test_save_auto_creates_folder_when_no_destination(tmp_path):
     result = await service.get_task(task.id)
     assert result.status == TaskStatus.COMPLETED
 
-    # 应创建了文件夹，且转存用了该文件夹 fid（而非根目录 "0"）
-    assert len(provider.created_folders) == 1
+    # 应创建了独立根文件夹 + 两个子目录（保留目录结构）。
+    # 根文件直接转存到根文件夹，不新建额外子目录。
+    assert len(provider.created_folders) == 3
+    # 第一个是自动创建的根文件夹（panbridge-<taskid前8>）
+    assert provider.created_folders[0][0].startswith("panbridge-")
+    assert provider.created_folders[0][1] == "0"
+    # 后两个是分享中的子目录 folder / sub，父级为对应目录 fid
+    assert provider.created_folders[1][0] == "folder"
+    assert provider.created_folders[2][0] == "sub"
+    # 转存 destination 不应是根目录 "0"，而应是自动创建的文件夹 fid
     assert provider.saved_destinations[0].startswith("dir-panbridge-")
 
     await worker.stop()
@@ -432,6 +441,142 @@ async def test_recursive_directory_download_preserves_structure(tmp_path):
     assert os.path.isfile(
         os.path.join(worker.download_dir, "folder", "sub", "deepest.bin")
     )
+
+    await worker.stop()
+    await engine.dispose()
+
+
+class _SameNameProvider(MockProvider):
+    """不同目录下有同名文件的分享（用于验证转存不冲突、映射不混淆）。
+
+    结构：
+      root/readme.txt        <- 根目录同名文件
+      folder/readme.txt      <- 与根目录同名
+    """
+
+    async def list_share_files(
+        self, share_id, password, parent_id=None
+    ):
+        prefix = share_id
+        if parent_id == f"{prefix}-d1":
+            return [
+                ShareFile(
+                    file_id=f"{prefix}-f3", name="readme.txt", size=32,
+                    parent_id=f"{prefix}-d1",
+                ),
+            ]
+        return await super().list_share_files(share_id, password, parent_id)
+
+    async def inspect_share(self, share_id, password):
+        share = await super().inspect_share(share_id, password)
+        # 根目录额外加一个 readme.txt，与子目录同名
+        share.files = [
+            ShareFile(
+                file_id=f"{share_id}-f0", name="readme.txt", size=16,
+            ),
+            *share.files,
+        ]
+        return share
+
+
+@pytest.mark.asyncio
+async def test_save_and_download_preserves_structure_and_names(tmp_path):
+    """目录感知转存：不同目录同名文件不应冲突，映射按目录严格对应。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    provider = _SameNameProvider()
+    registry = ProviderRegistry()
+    registry.register(provider)
+
+    downloader = _RecordingDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    async with session_scope(sessionmaker) as session:
+        await AccountRepository(session).add(
+            Account(id="acc1", provider="mock", label="t")
+        )
+
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.SAVE_AND_DOWNLOAD,
+            account_id="acc1",
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    assert result.status == TaskStatus.COMPLETED
+
+    # 根目录 readme.txt/video.mkv/subtitle.srt + folder/readme.txt = 4 个文件
+    files = result.result["files"]
+    rel_paths = {f["rel_path"] for f in files}
+    assert "readme.txt" in rel_paths
+    assert "folder/readme.txt" in rel_paths
+    assert len(files) == 4
+
+    await worker.stop()
+    await engine.dispose()
+
+
+class _WrongOrderProvider(MockProvider):
+    """返回 saved_file_ids 数量正确但顺序错乱（模拟平台不保证顺序）。"""
+
+    async def save_shared_files(
+        self, account, share_id, password, file_ids, destination, on_conflict
+    ):
+        # 故意打乱顺序：数量一致但位置错乱
+        from panbridge.domain.models import TransferResult
+
+        saved = [f"saved-{fid}" for fid in reversed(file_ids)]
+        return TransferResult(saved_file_ids=saved)
+
+
+@pytest.mark.asyncio
+async def test_transfer_count_mismatch_fails_not_forged(tmp_path):
+    """转存返回 fid 数量与源文件数不一致时，应如实报错而非伪造成功。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    provider = _IncompleteResolveProvider()
+    registry = ProviderRegistry()
+    registry.register(provider)
+
+    downloader = _FakeDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    async with session_scope(sessionmaker) as session:
+        await AccountRepository(session).add(
+            Account(id="acc1", provider="mock", label="t")
+        )
+
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.SAVE_AND_DOWNLOAD,
+            account_id="acc1",
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    assert result.status == TaskStatus.FAILED
+    assert result.error_code == "DOWNLOAD_FAILED"
 
     await worker.stop()
     await engine.dispose()

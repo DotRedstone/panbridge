@@ -182,11 +182,11 @@ class Worker:
             if account is None:
                 account = await self._get_account(task.account_id)
 
-        # 转存/下载需要显式的文件列表（转存接口按 fid 逐个转存）。
-        # 未指定 selection 时，转存阶段也需把子目录文件纳入，故先递归
-        # 收集一次完整文件列表，得到源 fid 列表供转存使用。
+        # 转存需要完整的目录条目列表（含相对路径），供目录感知转存与
+        # 严格的「源 fid → 新 fid」映射使用。未指定 selection 时递归收集
+        # 全部文件（含子目录）。
+        pre_entries: list[_Entry] = []
         if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
-            # 提前遍历目录树拿到所有源 fid（转存接口需要完整列表）。
             pre_entries = await self._collect_entries(
                 provider,
                 extracted.share_id,
@@ -195,32 +195,30 @@ class Worker:
                 selected_fid_set,
                 account,
             )
-            selected_fids = [e.source_fid for e in pre_entries]
-        else:
-            selected_fids = list(selected_fid_set) or [
-                f.file_id for f in share.files if not f.is_dir
-            ]
 
         if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
             await self._set_status(task.id, TaskStatus.SAVING)
             destination = await self._resolve_destination(
                 provider, account, task
             )
-            transfer = await provider.save_shared_files(
+            # 目录感知转存：按 rel_path 分组，尽力保留原始目录结构，
+            # 避免不同目录同名文件冲突；返回严格的「源 fid → 新 fid」映射。
+            transfer_map = await self._save_preserving_structure(
+                provider,
                 account,
                 extracted.share_id,
                 extracted.password,
-                selected_fids,
+                pre_entries,
                 destination,
                 task.on_conflict.value,
             )
-            # 转存返回的新 fid 与 selected_fids 顺序对应（平台保证）。
-            # 若平台未返回新 fid（异步转存），后续在下载阶段 resolve。
-            saved_file_ids = transfer.saved_file_ids
             if task.action == Action.SAVE:
-                return {"saved": saved_file_ids, "destination": destination}
+                return {
+                    "saved": [m["account_fid"] for m in transfer_map],
+                    "destination": destination,
+                }
         else:
-            saved_file_ids = []
+            transfer_map = []
 
         if task.action in (Action.DOWNLOAD, Action.SAVE_AND_DOWNLOAD):
             if self.downloader is None:
@@ -243,14 +241,8 @@ class Worker:
             if task.action == Action.SAVE_AND_DOWNLOAD:
                 if account is None:
                     account = await self._get_account(task.account_id)
-                # 若转存未直接返回新 fid，则按文件名在目标目录解析。
-                if saved_file_ids and len(saved_file_ids) == len(entries):
-                    for ent, new_fid in zip(entries, saved_file_ids, strict=True):
-                        ent.account_fid = new_fid
-                else:
-                    await self._resolve_account_fids(
-                        provider, account, destination, entries
-                    )
+                # 用严格映射为每个 entry 绑定账号新 fid（缺失即失败）。
+                await self._apply_transfer_map(entries, transfer_map)
                 downloaded = await self._download_account_entries(
                     provider, account, entries, task.on_conflict.value
                 )
@@ -388,29 +380,238 @@ class Worker:
         await walk(share.files, "", 0)
         return entries
 
-    async def _resolve_account_fids(
-        self, provider, account, destination: str, entries: list[_Entry]
-    ) -> None:
-        """转存后按文件名解析新 fid，填入 entry.account_fid。
+    async def _save_preserving_structure(
+        self,
+        provider,
+        account,
+        share_id: str,
+        password: str | None,
+        entries: list[_Entry],
+        destination: str,
+        on_conflict: str,
+    ) -> list[dict]:
+        """目录感知转存，返回严格的「源 fid → 账号新 fid」映射列表。
 
-        禁止用源 fid 或模糊文件名伪造成功：同名匹配到多个文件时抛错，
-        匹配不到时抛错（该文件转存失败），而非静默跳过。
+        每个映射项：{"source_fid", "name", "rel_path", "account_fid"}。
+
+        策略（按能力降级，始终保证映射可追溯）：
+        1. 平台支持 create_folder：按目录分组重建子目录，逐目录转存，
+           不同目录同名文件互不冲突；映射由「目录 + 返回顺序」确定。
+        2. 平台不支持 create_folder：整体扁平转存到 destination，映射由
+           平台返回的显式 `saved` 或顺序 `saved_file_ids` 确定。
+        3. 异步转存（saved 与 saved_file_ids 皆空）：先 await_transfer
+           轮询完成确认；仍无显式映射则按「唯一目标目录 + 文件名」解析，
+           数量不一致或同名歧义即抛错，绝不伪造成功。
         """
+        supports_folder = "create_folder" in provider.capabilities
+        if supports_folder:
+            return await self._save_by_directory(
+                provider, account, share_id, password, entries,
+                destination, on_conflict,
+            )
+
+        # 不支持 create_folder：扁平转存，映射来自返回结果。
+        fids = [e.source_fid for e in entries]
+        transfer = await provider.save_shared_files(
+            account, share_id, password, fids, destination, on_conflict
+        )
+        mapping = self._transfer_map_from_result(entries, transfer)
+        if mapping:
+            return mapping
+        return await self._resolve_async_mapping(
+            provider, account, destination, entries, transfer
+        )
+
+    async def _save_by_directory(
+        self,
+        provider,
+        account,
+        share_id: str,
+        password: str | None,
+        entries: list[_Entry],
+        destination: str,
+        on_conflict: str,
+    ) -> list[dict]:
+        """按目录分组转存，重建子目录结构，返回显式映射。
+
+        目录 fid 缓存避免重复 create_folder；目录按深度从浅到深创建，
+        保证父目录先于子目录存在。异步转存时，每个子目录单独确认。
+        """
+        from collections import defaultdict
+
+        # 目录（rel_path 的 dirname）→ 该目录下的文件 entry 列表
+        by_dir: dict[str, list[_Entry]] = defaultdict(list)
+        for e in entries:
+            d = e.rel_path.rsplit("/", 1)[0] if "/" in e.rel_path else ""
+            by_dir[d].append(e)
+
+        dir_fids: dict[str, str] = {"": destination}
+        # 按目录路径深度排序（浅目录先创建）
+        dirs = sorted(by_dir.keys(), key=lambda d: d.count("/"))
+
+        mapping: list[dict] = []
+        for d in dirs:
+            if d == "":
+                # 根目录文件直接转存到 destination，不新建子目录。
+                sub_fid = destination
+            else:
+                parent = d.rsplit("/", 1)[0] if "/" in d else ""
+                parent_fid = dir_fids[parent]
+                dir_name = d.rsplit("/", 1)[-1]
+                sub_fid = await provider.create_folder(
+                    account, dir_name, parent_fid
+                )
+                dir_fids[d] = sub_fid
+
+            sub_entries = by_dir[d]
+            fids = [e.source_fid for e in sub_entries]
+            transfer = await provider.save_shared_files(
+                account, share_id, password, fids, sub_fid, on_conflict
+            )
+            sub_map = self._transfer_map_from_result(sub_entries, transfer)
+            if not sub_map:
+                sub_map = await self._resolve_async_mapping(
+                    provider, account, sub_fid, sub_entries, transfer
+                )
+            mapping.extend(sub_map)
+
+        return mapping
+
+    def _transfer_map_from_result(
+        self, entries: list[_Entry], transfer
+    ) -> list[dict]:
+        """从 TransferResult 构建「源 fid → 新 fid」显式映射（严格校验）。
+
+        优先级：
+        1. `transfer.saved` 显式映射（平台逐文件给出）——直接校验覆盖全部。
+        2. `transfer.saved_file_ids` 顺序列表——长度必须与 entries 一致，
+           否则抛错（禁止仅凭数量一致就假设顺序正确）。
+        3. 两者皆空（异步）——返回空，由调用方走 await_transfer / resolve。
+        """
+        if transfer.saved:
+            by_source = {
+                str(m.get("source_fid")): m for m in transfer.saved
+            }
+            mapping: list[dict] = []
+            for e in entries:
+                m = by_source.get(e.source_fid)
+                if m is None or not m.get("account_fid"):
+                    raise DomainError(
+                        ErrorCode.DOWNLOAD_FAILED,
+                        f"transfer mapping missing for {e.name!r} "
+                        f"(source_fid={e.source_fid})",
+                        retryable=False,
+                    )
+                mapping.append(
+                    {
+                        "source_fid": e.source_fid,
+                        "name": e.name,
+                        "rel_path": e.rel_path,
+                        "account_fid": str(m["account_fid"]),
+                    }
+                )
+            return mapping
+
+        if transfer.saved_file_ids:
+            if len(transfer.saved_file_ids) != len(entries):
+                raise DomainError(
+                    ErrorCode.DOWNLOAD_FAILED,
+                    "transfer returned file id count mismatch "
+                    f"({len(transfer.saved_file_ids)} vs {len(entries)}); "
+                    "cannot establish source→account mapping",
+                    retryable=False,
+                )
+            return [
+                {
+                    "source_fid": e.source_fid,
+                    "name": e.name,
+                    "rel_path": e.rel_path,
+                    "account_fid": str(new_fid),
+                }
+                for e, new_fid in zip(
+                    entries, transfer.saved_file_ids, strict=True
+                )
+            ]
+
+        # 异步转存：无同步映射，交由调用方 await_transfer / resolve。
+        return []
+
+    async def _resolve_async_mapping(
+        self,
+        provider,
+        account,
+        destination: str,
+        entries: list[_Entry],
+        transfer,
+    ) -> list[dict]:
+        """异步转存完成确认：await_transfer 优先，resolve 兜底。
+
+        返回与 entries 等长的显式映射；无法建立完整映射时抛错，不伪造。
+        """
+        # 1) 平台提供 await_transfer（轮询任务完成并给显式映射）
+        if transfer.remote_task_id:
+            try:
+                confirmed = await provider.await_transfer(
+                    account, transfer.remote_task_id
+                )
+            except DomainError as exc:
+                if exc.code != ErrorCode.UNSUPPORTED_OPERATION:
+                    raise
+                confirmed = None
+            if confirmed is not None:
+                mapping = self._transfer_map_from_result(entries, confirmed)
+                if mapping:
+                    return mapping
+
+        # 2) 兜底：按「唯一目标目录 + 文件名」解析
         names = [e.name for e in entries]
         resolved = await provider.resolve_saved_file_ids(
             account, destination, names
-        )
-        if resolved is None:
-            resolved = []
-        # resolve_saved_file_ids 返回的 fid 列表与 names 顺序对应。
+        ) or []
         if len(resolved) != len(names):
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,
-                "cannot resolve all saved file IDs after transfer",
+                "cannot resolve all saved file IDs after async transfer "
+                f"({len(resolved)} vs {len(names)})",
                 retryable=False,
             )
-        for ent, new_fid in zip(entries, resolved, strict=True):
-            ent.account_fid = new_fid
+        mapping: list[dict] = []
+        for e, new_fid in zip(entries, resolved, strict=True):
+            if not new_fid:
+                raise DomainError(
+                    ErrorCode.DOWNLOAD_FAILED,
+                    f"async transfer resolved empty fid for {e.name!r}",
+                    retryable=False,
+                )
+            mapping.append(
+                {
+                    "source_fid": e.source_fid,
+                    "name": e.name,
+                    "rel_path": e.rel_path,
+                    "account_fid": str(new_fid),
+                }
+            )
+        return mapping
+
+    async def _apply_transfer_map(
+        self, entries: list[_Entry], transfer_map: list[dict]
+    ) -> None:
+        """把转存映射绑定到 entries 的 account_fid（缺失即失败）。"""
+        by_source = {m["source_fid"]: m["account_fid"] for m in transfer_map}
+        if len(by_source) != len(entries):
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "transfer mapping incomplete; cannot bind account fid",
+                retryable=False,
+            )
+        for e in entries:
+            if e.source_fid not in by_source:
+                raise DomainError(
+                    ErrorCode.DOWNLOAD_FAILED,
+                    f"no account fid for {e.name!r} after transfer",
+                    retryable=False,
+                )
+            e.account_fid = by_source[e.source_fid]
 
     async def _get_account(self, account_id: str | None):
         from panbridge.persistence import AccountRepository

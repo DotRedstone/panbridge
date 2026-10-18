@@ -130,6 +130,25 @@ class ShareProvider(ABC):
         """
         return []
 
+    async def await_transfer(
+        self, account: Account, remote_task_id: str
+    ) -> TransferResult:
+        """等待异步转存任务完成，返回确认结果（含显式映射）。
+
+        默认实现直接抛 UNSUPPORTED_OPERATION，表示「该平台转存是同步的、
+        无需轮询确认」。异步转存平台（夸克/115/百度/移动云/天翼）应实现：
+        轮询远端任务状态直到完成或失败，并返回携带 `saved` 显式映射的
+        TransferResult（源 fid → 账号新 fid），供 Worker 严格校验。
+
+        不得返回「仅数量一致」的模糊结果；映射必须逐文件可追溯。
+        """
+        from panbridge.domain.errors import DomainError, ErrorCode
+
+        raise DomainError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            f"provider {self.name} does not expose async transfer confirmation",
+        )
+
     async def create_folder(
         self, account: Account, name: str, parent_id: str = "0"
     ) -> str:
