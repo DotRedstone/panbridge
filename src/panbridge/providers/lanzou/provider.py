@@ -85,7 +85,7 @@ _TITLE_RE = re.compile(
 _FILENAME_RE = re.compile(
     r"class=\"n_box\".*?<b>(.*?)</b>", re.S
 )
-# 新协议文件名：<div style="font-size:30px">文件名</div> 或 <title>文件名 - 蓝奏云</title>
+# 新协议文件名（div 或 title 中提取）
 _NEW_FILENAME_RE = re.compile(
     r"<title>\s*(.*?)\s*-\s*蓝奏云", re.S
 )
