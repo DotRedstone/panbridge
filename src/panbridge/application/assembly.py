@@ -12,13 +12,17 @@ Provider 注册清单，容易漏注册（例如 MockProvider 只在 main 里注
 
 from __future__ import annotations
 
-from panbridge.application.auth import QuarkQrAuthService
+import logging
+
+from panbridge.application.auth import QrAuthService
 from panbridge.application.auth_service import AuthService
 from panbridge.application.service import ApplicationService
 from panbridge.downloads.http import HttpDownloader
 from panbridge.infrastructure.config import Settings
 from panbridge.infrastructure.crypto import CredentialCipher
 from panbridge.providers.registry import ProviderRegistry
+
+logger = logging.getLogger(__name__)
 
 
 def build_registry(
@@ -107,9 +111,22 @@ def build_auth_service(
 ) -> AuthService | None:
     """构建认证服务；无 cipher（未配置主密钥）时返回 None。
 
-    当前仅夸克支持扫码登录，其余平台需手工导入凭据（见 docs/providers.md）。
+    扫码登录支持夸克、阿里云盘、115 网盘三个平台；其余平台需手工导入
+    凭据（见 docs/providers.md）。
     """
     if cipher is None:
         return None
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher)
+    qr_auth = QrAuthService(sessionmaker, cipher)
+
+    # 注册各平台扫码后端；后端初始化失败（依赖缺失）时不阻断其他平台。
+    from panbridge.providers.aliyun.qr_backend import AliyunQrBackend
+    from panbridge.providers.pan115.qr_backend import Pan115QrBackend
+    from panbridge.providers.quark.qr_backend import QuarkQrBackend
+
+    for backend_cls in (QuarkQrBackend, AliyunQrBackend, Pan115QrBackend):
+        try:
+            qr_auth.register_backend(backend_cls())
+        except RuntimeError as exc:  # 依赖缺失，跳过该平台
+            logger.warning("qr backend %s unavailable: %s",
+                           backend_cls.__name__, exc)
     return AuthService(service, registry, qr_auth)

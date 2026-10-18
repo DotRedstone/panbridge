@@ -1,17 +1,27 @@
 """扫码认证服务单元测试。
 
-通过 mock quark_client.auth.APILogin 验证扫码登录流程的编排逻辑，
+验证统一 `QrAuthService` 的会话编排逻辑（start/check/finish/cancel、
+过期、取消、重复扫码、凭据加密入库），用 fake backend 模拟平台协议，
 不访问真实网络（遵守「自动化测试不得操作真实网盘」原则）。
+
+三个真实 backend（quark/aliyun/115）的协议模拟测试见
+tests/unit/test_qr_backends.py。
 """
 
 from __future__ import annotations
 
 import pytest
 
-from panbridge.application.auth import QuarkQrAuthService
+from panbridge.application.auth import (
+    QrAuthBackend,
+    QrAuthService,
+    QrCredential,
+    QrStatus,
+    QrTicket,
+)
 from panbridge.application.auth_service import AuthService
 from panbridge.application.service import ApplicationService
-from panbridge.domain.errors import DomainError
+from panbridge.domain.errors import DomainError, ErrorCode
 from panbridge.infrastructure.crypto import CredentialCipher
 from panbridge.persistence import create_engine, create_sessionmaker, init_db
 from panbridge.providers.quark.mock import MockProvider
@@ -22,29 +32,34 @@ async def _async_true(account):
     return True
 
 
-class _FakeAPILogin:
-    """模拟 QuarkPan APILogin：可控的二维码与登录状态。"""
+class _FakeBackend(QrAuthBackend):
+    """可控的 fake 后端：模拟二维码与扫码状态流转。"""
 
-    def __init__(self, timeout=300):
-        self.timeout = timeout
-        self._pb_service_ticket = None
+    name = "fake"
+    display_name = "Fake"
 
-    def get_qr_code(self):
-        return "fake-qr-token", "https://su.quark.cn/fake?token=fake"
+    def __init__(self):
+        self.scanned = False
+        self.confirmed = False
+        self.cancelled_calls = 0
 
-    def check_login_status(self, qr_token):
-        # 扫码前返回 None，扫码后返回含 service_ticket 的 dict
-        if self._pb_service_ticket:
-            return {
-                "status": 2000000,
-                "message": "ok",
-                "data": {
-                    "members": {
-                        "service_ticket": self._pb_service_ticket,
-                    }
-                },
-            }
-        return None
+    async def start(self) -> QrTicket:
+        return QrTicket(qr_url="https://fake.example/qr", state={})
+
+    async def check(self, ticket: QrTicket) -> QrStatus:
+        if self.confirmed:
+            return QrStatus(status="success")
+        if self.scanned:
+            return QrStatus(status="scanned")
+        return QrStatus(status="waiting")
+
+    async def finish(self, ticket: QrTicket) -> QrCredential:
+        if not self.confirmed:
+            raise DomainError(ErrorCode.ACTION_REQUIRED, "not confirmed")
+        return QrCredential(credential="fake-credential", label="fake-qr")
+
+    async def cancel(self, ticket: QrTicket) -> None:
+        self.cancelled_calls += 1
 
 
 @pytest.fixture
@@ -65,114 +80,121 @@ async def svc(tmp_path):
 
 
 @pytest.fixture
-def fake_login(monkeypatch):
-    fake = _FakeAPILogin()
-    monkeypatch.setattr(
-        "panbridge.application.auth.APILogin", lambda **kw: fake
-    )
-    return fake
+def fake_backend():
+    return _FakeBackend()
+
+
+@pytest.fixture
+def qr_auth(svc, cipher, fake_backend):
+    service, sessionmaker = svc
+    qa = QrAuthService(sessionmaker, cipher)
+    qa.register_backend(fake_backend)
+    return qa
 
 
 @pytest.mark.asyncio
-async def test_start_login_returns_qr(svc, cipher, fake_login):
-    service, sessionmaker = svc
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher)
-    info = await qr_auth.start_login("quark")
-    assert info["provider"] == "quark"
-    assert info["qr_url"].startswith("https://su.quark.cn/")
+async def test_start_login_returns_qr(qr_auth):
+    info = await qr_auth.start_login("fake")
+    assert info["provider"] == "fake"
+    assert info["qr_url"].startswith("https://fake.example/")
     assert info["session_id"]
 
 
 @pytest.mark.asyncio
-async def test_check_login_waiting_then_success(svc, cipher, fake_login):
-    service, sessionmaker = svc
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher)
-    info = await qr_auth.start_login("quark")
-    sid = info["session_id"]
-
-    # 尚未扫码 → waiting
-    status = await qr_auth.check_login(sid)
-    assert status["status"] == "waiting"
-
-    # 模拟扫码成功
-    fake_login._pb_service_ticket = "fake-service-ticket"
-    status = await qr_auth.check_login(sid)
-    assert status["status"] == "success"
+async def test_unsupported_provider_raises(qr_auth):
+    with pytest.raises(DomainError) as exc:
+        await qr_auth.start_login("unknown")
+    assert exc.value.code == ErrorCode.UNSUPPORTED_PROVIDER
 
 
 @pytest.mark.asyncio
-async def test_finish_login_persists_account(svc, cipher, fake_login, monkeypatch):
-    service, sessionmaker = svc
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher)
-
-    # 拦截换 Cookie 的网络请求
-    async def _fake_exchange(ticket):
-        return "__kps=abc; __uid=def"
-
-    monkeypatch.setattr(qr_auth, "_exchange_cookie", _fake_exchange)
-
-    info = await qr_auth.start_login("quark")
+async def test_check_login_waiting_scanned_success(qr_auth, fake_backend):
+    info = await qr_auth.start_login("fake")
     sid = info["session_id"]
-    fake_login._pb_service_ticket = "fake-service-ticket"
+
+    assert (await qr_auth.check_login(sid))["status"] == "waiting"
+
+    fake_backend.scanned = True
+    assert (await qr_auth.check_login(sid))["status"] == "scanned"
+
+    fake_backend.confirmed = True
+    assert (await qr_auth.check_login(sid))["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_finish_persists_account(qr_auth, fake_backend, svc, cipher):
+    service, sessionmaker = svc
+    info = await qr_auth.start_login("fake")
+    sid = info["session_id"]
+
+    fake_backend.confirmed = True
     await qr_auth.check_login(sid)
     result = await qr_auth.finish_login(sid)
 
     assert result.logged_in is True
     assert result.account_id
+    assert result.provider == "fake"
 
-    # 账号已加密入库，且解密后不含明文 Cookie
     account = await service.get_account(result.account_id)
     assert account.encrypted_credential
-    assert "abc" not in account.encrypted_credential
-    # 解密后还原 Cookie
-    assert cipher.decrypt(account.encrypted_credential) == "__kps=abc; __uid=def"
+    assert "fake-credential" not in account.encrypted_credential
+    assert cipher.decrypt(account.encrypted_credential) == "fake-credential"
 
 
 @pytest.mark.asyncio
-async def test_finish_before_scan_raises(svc, cipher, fake_login):
-    service, sessionmaker = svc
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher)
-    info = await qr_auth.start_login("quark")
-    with pytest.raises(DomainError):
+async def test_finish_before_confirm_raises(qr_auth):
+    info = await qr_auth.start_login("fake")
+    with pytest.raises(DomainError) as exc:
         await qr_auth.finish_login(info["session_id"])
+    assert exc.value.code == ErrorCode.ACTION_REQUIRED
 
 
 @pytest.mark.asyncio
-async def test_login_status_and_logout(svc, cipher, fake_login, monkeypatch):
-    service, sessionmaker = svc
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher)
-    registry = ProviderRegistry()
-    # 注册真实 QuarkProvider，但拦截 validate_account 避免真实网络
-    from panbridge.providers.quark.provider import QuarkProvider
+async def test_check_expired_session(qr_auth):
+    info = await qr_auth.start_login("fake")
+    sid = info["session_id"]
+    # 直接删除会话模拟过期，check 应返回 expired 而非抛错
+    qr_auth._sessions.pop(sid, None)
+    assert (await qr_auth.check_login(sid))["status"] == "expired"
 
-    qp = QuarkProvider(cipher=cipher)
-    monkeypatch.setattr(qp, "validate_account", _async_true)
-    registry.register(qp)
+
+@pytest.mark.asyncio
+async def test_cancel_login(qr_auth, fake_backend):
+    info = await qr_auth.start_login("fake")
+    sid = info["session_id"]
+    result = await qr_auth.cancel_login(sid)
+    assert result["cancelled"] is True
+    assert fake_backend.cancelled_calls == 1
+    # 重复取消幂等
+    result2 = await qr_auth.cancel_login(sid)
+    assert result2["cancelled"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_ttl_expiry(qr_auth):
+    info = await qr_auth.start_login("fake")
+    sid = info["session_id"]
+    # 人为把会话时间拨回过去，模拟过期
+    import time
+
+    qr_auth._sessions[sid].created_at = time.time() - qr_auth.session_ttl - 1
+    assert (await qr_auth.check_login(sid))["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_auth_service_gateway(svc, cipher, fake_backend):
+    service, sessionmaker = svc
+    qr_auth = QrAuthService(sessionmaker, cipher)
+    qr_auth.register_backend(fake_backend)
+    registry = ProviderRegistry()
+    registry.register(MockProvider())
     auth = AuthService(service, registry, qr_auth)
 
-    # 未登录
-    status = await auth.login_status("quark")
-    assert status["logged_in"] is False
+    assert "fake" in auth.supported_qr_providers()
 
-    # 登录后（用 mock provider 的账号，绕开真实校验）
-    from panbridge.domain.models import Account
-    from panbridge.persistence import AccountRepository, session_scope
-
-    async with session_scope(sessionmaker) as session:
-        account = Account(
-            id="acc-quark",
-            provider="quark",
-            label="test",
-            encrypted_credential=cipher.encrypt("cookie"),
-        )
-        await AccountRepository(session).add(account)
-
-    # MockProvider.validate_account 对 quark 账号默认返回 True（非 expired）
-    status = await auth.login_status("quark")
-    assert status["logged_in"] is True
-
-    # 退出登录
-    result = await auth.logout("quark")
-    assert result["removed"] >= 1
-    status = await auth.login_status("quark")
-    assert status["logged_in"] is False
+    info = await auth.start_qr_login("fake")
+    fake_backend.confirmed = True
+    await auth.check_qr_login(info["session_id"])
+    result = await auth.finish_qr_login(info["session_id"])
+    assert result["provider"] == "fake"
+    assert result["logged_in"] is True

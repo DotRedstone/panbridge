@@ -3,9 +3,11 @@
 提供扫码登录、登录状态查询、退出登录三个子命令，无需 WebUI。
 
 用法：
-    panbridge auth login     # 终端显示二维码，夸克 App 扫码登录
-    panbridge auth status    # 查询当前登录状态
-    panbridge auth logout    # 退出登录（删除本地账号）
+    panbridge auth login --provider quark    # 终端显示二维码，夸克 App 扫码
+    panbridge auth login --provider aliyun   # 阿里云盘 App 扫码
+    panbridge auth login --provider 115      # 115 App 扫码
+    panbridge auth status                    # 查询当前登录状态
+    panbridge auth logout                    # 退出登录（删除本地账号）
 """
 
 from __future__ import annotations
@@ -30,9 +32,9 @@ from panbridge.persistence import (
 logging.basicConfig(level=logging.WARNING)
 
 
-def _display_qr(qr_url: str) -> None:
+def _display_qr(qr_url: str, provider: str) -> None:
     """在终端渲染 ASCII 二维码（无外部服务、无浏览器自动化）。"""
-    print("\n请使用「夸克」App 扫描下方二维码登录：\n")
+    print(f"\n请使用「{provider}」App 扫描下方二维码登录：\n")
     try:
         import qrcode
 
@@ -63,7 +65,7 @@ async def _login(provider: str) -> int:
     try:
         info = await auth.start_qr_login(provider)
         session_id = info["session_id"]
-        _display_qr(info["qr_url"])
+        _display_qr(info["qr_url"], info["provider"])
 
         print("等待扫码登录中（最多 5 分钟）...\n")
         for _ in range(150):  # 每 2 秒轮询一次
@@ -79,6 +81,9 @@ async def _login(provider: str) -> int:
                 return 0
             if status.get("status") == "expired":
                 print("⏰ 二维码已过期，请重新运行 `panbridge auth login`")
+                return 1
+            if status.get("status") == "cancelled":
+                print("🚫 扫码已取消")
                 return 1
 
         print("⏰ 登录超时，请重新运行 `panbridge auth login`")

@@ -1,32 +1,37 @@
-"""夸克扫码登录认证服务。
+"""统一扫码登录认证服务。
 
-复用 QuarkPan（MIT）的 `APILogin` 底层协议能力
-（`get_qr_code` / `check_login_status`），但**隔离其副作用**：
+把「扫码登录」从夸克专用泛化为多平台：抽象出 `QrAuthBackend` 协议，
+每个平台（夸克 / 阿里云盘 / 115 网盘）实现「获取二维码 → 轮询状态 →
+确认完成 → 取消」四阶段接口，统一由 `QrAuthService` 编排会话生命周期，
+并对接 `AccountRepository` 加密持久化凭据。
 
-- 不用 `APILogin.login()` / `wait_for_login()`：它们内部有 `print`、
-  倒计时线程、`time.sleep` 阻塞轮询，且会把 `login_result.json`、
-  `user_info.json` 写到 QuarkPan 自己的配置目录（明文凭据副作用）。
-- 不用 `QuarkAuth`：它会把 Cookie 明文写到 `cookies.json`。
+设计目标：
+1. 不把业务逻辑硬编码为 Quark 专用；新增平台只需实现一个 backend。
+2. 会话统一支持：过期、取消、重复扫码、凭据失效后的重新登录。
+3. 凭据只在内存中短暂存在，最终加密进 DB；不把 SDK 的明文凭据
+   （aligo 的 ~/.aligo、p115client 的 cookie 文件、QuarkPan 的
+   cookies.json）长期留在项目外部目录。
+4. 不阻塞 HTTP 事件循环（轮询用 asyncio.sleep，SDK 调用走 to_thread）。
 
-本服务只复用「获取二维码」与「单次查询扫码状态」两个无副作用的协议
-方法，其余（异步轮询、service_ticket 换 Cookie、凭据加密持久化）由
-本模块自行实现，做到：
-
-1. 不阻塞 HTTP 事件循环（轮询用 asyncio.sleep）。
-2. 不重复保存明文凭据（Cookie 只在内存中短暂存在，最终加密进 DB）。
-3. 登录结果直接写入 `AccountRepository`，接入现有账号体系。
+Backend 协议（`QrAuthBackend`）：
+- `start() -> QrTicket`：发起扫码，返回二维码内容/URL 与轮询所需的
+  不透明 state（供后续 check/finish 使用）。
+- `check(ticket, state) -> QrStatus`：单次轮询，返回 waiting/scanned/
+  success/expired/cancelled/failed。
+- `finish(state) -> QrCredential`：确认登录成功，换取最终凭据
+  （Cookie / refresh_token 字符串），供加密入库。
+- `cancel(state)`：主动取消（部分平台可调远端取消接口，否则仅丢弃
+  本地 state）。
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
-
-import httpx
 
 from panbridge.domain.errors import DomainError, ErrorCode
 from panbridge.infrastructure.crypto import CredentialCipher
@@ -34,15 +39,64 @@ from panbridge.persistence import AccountRepository, session_scope
 
 logger = logging.getLogger(__name__)
 
-try:  # pragma: no cover - 依赖可选
-    from quark_client.auth import APILogin
-    from quark_client.exceptions import AuthenticationError as QuarkAuthError
-except ImportError:  # pragma: no cover
-    APILogin = None  # type: ignore
-    QuarkAuthError = Exception  # type: ignore
-
 # 扫码登录单次会话的默认有效期（秒）
 _DEFAULT_SESSION_TTL = 300
+
+
+@dataclass
+class QrTicket:
+    """发起扫码后的结果：二维码内容 + 轮询所需的不透明 state。"""
+
+    qr_url: str
+    # 平台后端轮询/确认所需的私有 state（如夸克的 token、阿里云盘的
+    # data、115 的 payload）。只在内存中，不落盘。
+    state: Any = None
+
+
+@dataclass
+class QrStatus:
+    """单次轮询结果。"""
+
+    status: str  # waiting | scanned | success | expired | cancelled | failed
+    # 成功后暂存的中间凭据（如夸克 service_ticket），供 finish 使用。
+    intermediate: Any = None
+
+
+@dataclass
+class QrCredential:
+    """扫码登录最终凭据（将加密入库）。"""
+
+    # 待加密的明文凭据字符串（Cookie 或 refresh_token 等）。
+    credential: str
+    label: str
+
+
+class QrAuthBackend(ABC):
+    """单平台扫码登录后端协议。
+
+    实现类应为无状态（或仅持有只读配置），所有会话状态通过
+    `ticket.state` 在 start/check/finish 之间传递。禁止把明文凭据写入
+    任何持久化位置（文件、SDK 默认目录）。
+    """
+
+    name: str
+    display_name: str
+
+    @abstractmethod
+    async def start(self) -> QrTicket:
+        """发起扫码，返回二维码与轮询 state。"""
+
+    @abstractmethod
+    async def check(self, ticket: QrTicket) -> QrStatus:
+        """单次轮询扫码状态（非阻塞，失败/超时返回 waiting 而非抛错）。"""
+
+    @abstractmethod
+    async def finish(self, ticket: QrTicket) -> QrCredential:
+        """确认登录成功，换取最终凭据。未成功时抛 ACTION_REQUIRED。"""
+
+    async def cancel(self, ticket: QrTicket) -> None:  # noqa: BLE001
+        """主动取消会话。默认仅丢弃本地 state；平台若支持远端取消可覆盖。"""
+        return None
 
 
 @dataclass
@@ -51,12 +105,11 @@ class QrLoginSession:
 
     session_id: str
     provider: str
-    qr_token: str
-    qr_url: str
+    ticket: QrTicket
+    backend: QrAuthBackend
     created_at: float = field(default_factory=time.time)
-    # 内存中的认证会话持有 QuarkPan 的 APILogin 实例（含其 httpx client），
-    # 用于轮询扫码状态与最终换 Cookie。
-    login_mgr: Any = None
+    # 已确认成功、可 finish 的标志（check 返回 success 后置真）。
+    confirmed: bool = False
 
 
 @dataclass
@@ -69,198 +122,181 @@ class QrLoginResult:
     logged_in: bool = True
 
 
-class QuarkQrAuthService:
-    """夸克扫码登录用例服务。
+class QrAuthService:
+    """多平台扫码登录用例服务。
 
     三阶段接口，同时服务 CLI 与 REST API：
     1. start_login()      —— 发起扫码，返回二维码（token + url）。
     2. check_login()      —— 单次轮询，返回是否已完成。
-    3. finish_login()     —— 确认成功、换 Cookie、加密入库。
+    3. finish_login()     —— 确认成功、换凭据、加密入库。
+    4. cancel_login()     —— 主动取消会话。
+
+    会话统一处理过期、取消、重复扫码（check 幂等，finish 一次性）。
     """
 
     def __init__(
         self,
         sessionmaker,
         cipher: CredentialCipher,
+        backends: dict[str, QrAuthBackend] | None = None,
         *,
         session_ttl: int = _DEFAULT_SESSION_TTL,
     ) -> None:
-        if APILogin is None:  # pragma: no cover
-            raise RuntimeError(
-                "quarkpan 未安装，无法使用扫码登录。pip install quarkpan"
-            )
         self.sessionmaker = sessionmaker
         self.cipher = cipher
         self.session_ttl = session_ttl
+        self._backends: dict[str, QrAuthBackend] = dict(backends or {})
         # session_id -> QrLoginSession（内存，服务重启即失效）
         self._sessions: dict[str, QrLoginSession] = {}
 
-    # ---- 会话管理 ----
+    def register_backend(self, backend: QrAuthBackend) -> None:
+        """注册一个平台的扫码后端。"""
+        self._backends[backend.name] = backend
 
-    async def start_login(self, provider: str = "quark") -> dict[str, str]:
-        """发起扫码登录，返回 {session_id, provider, qr_url}。
+    def supported_providers(self) -> list[str]:
+        return sorted(self._backends.keys())
 
-        qr_url 用于在终端渲染二维码（或交给前端/AstrBot 展示）。
-        """
-        if provider != "quark":
+    def _backend_for(self, provider: str) -> QrAuthBackend:
+        backend = self._backends.get(provider)
+        if backend is None:
             raise DomainError(
                 ErrorCode.UNSUPPORTED_PROVIDER,
                 f"qr login not supported for provider: {provider}",
             )
+        return backend
 
-        login_mgr = APILogin(timeout=self.session_ttl)
-        # 复用 QuarkPan 获取二维码 token 与 URL 的协议实现
+    # ---- 会话管理 ----
+
+    async def start_login(self, provider: str = "quark") -> dict[str, str]:
+        """发起扫码登录，返回 {session_id, provider, qr_url}。"""
+        backend = self._backend_for(provider)
+        self._prune_expired()
         try:
-            qr_token, qr_url = await asyncio.to_thread(login_mgr.get_qr_code)
+            ticket = await backend.start()
+        except DomainError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise DomainError(
                 ErrorCode.INTERNAL_ERROR,
-                f"failed to obtain quark qr code: {exc.__class__.__name__}",
+                f"failed to obtain {provider} qr code: "
+                f"{exc.__class__.__name__}",
                 retryable=True,
             ) from exc
 
         session_id = uuid.uuid4().hex
-        session = QrLoginSession(
+        self._sessions[session_id] = QrLoginSession(
             session_id=session_id,
             provider=provider,
-            qr_token=qr_token,
-            qr_url=qr_url,
-            login_mgr=login_mgr,
+            ticket=ticket,
+            backend=backend,
         )
-        self._sessions[session_id] = session
-        self._prune_expired()
-        logger.info("qr login session %s started", session_id)
+        logger.info("qr login session %s started for %s", session_id, provider)
         return {
             "session_id": session_id,
             "provider": provider,
-            "qr_url": qr_url,
+            "qr_url": ticket.qr_url,
         }
 
     async def check_login(self, session_id: str) -> dict[str, Any]:
         """单次查询扫码状态（非阻塞）。
 
-        返回 {"status": "waiting"|"scanned"|"success"|"expired"|"failed"}。
+        返回 {"status": "waiting"|"scanned"|"success"|"expired"|
+        "cancelled"|"failed"}。
         """
-        session = self._get_session(session_id)
+        session = self._sessions.get(session_id)
         if session is None:
-            raise DomainError(
-                ErrorCode.ACCOUNT_NOT_FOUND,
-                f"qr login session not found or expired: {session_id}",
-            )
+            # 会话不存在（已过期被清理或从未创建）
+            return {"status": "expired"}
 
         if time.time() - session.created_at > self.session_ttl:
             self._sessions.pop(session_id, None)
             return {"status": "expired"}
 
-        # 复用 QuarkPan 的单次状态查询（无副作用）
         try:
-            result = await asyncio.to_thread(
-                session.login_mgr.check_login_status, session.qr_token
-            )
+            status = await session.backend.check(session.ticket)
+        except DomainError:
+            raise
         except Exception:  # noqa: BLE001
+            # 单次轮询失败视为等待，由调用方继续轮询
             return {"status": "waiting"}
 
-        if result is None:
-            # None 表示「仍在等待扫码」或「已扫码待确认」，无法区分，
-            # 保守返回 waiting，由调用方继续轮询。
-            return {"status": "waiting"}
-
-        # 拿到 result 说明登录成功（check_login_status 仅成功时返回 dict）
-        service_ticket = (
-            result.get("data", {}).get("members", {}).get("service_ticket")
-            if isinstance(result, dict)
-            else None
-        )
-        if not service_ticket:
-            return {"status": "waiting"}
-
-        # 把 service_ticket 暂存到会话，供 finish_login 换 Cookie
-        session.login_mgr._pb_service_ticket = service_ticket  # type: ignore[attr-defined]
-        return {"status": "success"}
+        if status.status == "success":
+            session.confirmed = True
+        return {"status": status.status}
 
     async def finish_login(self, session_id: str) -> QrLoginResult:
-        """确认登录成功：用 service_ticket 换 Cookie，加密入库。
-
-        返回已创建/更新的账号信息。
-        """
-        session = self._get_session(session_id)
+        """确认登录成功：换凭据、加密入库。返回账号信息。"""
+        session = self._sessions.get(session_id)
         if session is None:
             raise DomainError(
                 ErrorCode.ACCOUNT_NOT_FOUND,
                 f"qr login session not found or expired: {session_id}",
             )
 
-        service_ticket = getattr(
-            session.login_mgr, "_pb_service_ticket", None
-        )
-        if not service_ticket:
-            # 尚未扫码成功
+        if not session.confirmed:
             raise DomainError(
                 ErrorCode.ACTION_REQUIRED,
                 "qr login not yet confirmed; scan the qr code first",
                 retryable=False,
             )
 
-        cookie = await self._exchange_cookie(service_ticket)
-        if not cookie:
+        try:
+            credential = await session.backend.finish(session.ticket)
+        except DomainError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise DomainError(
+                ErrorCode.INTERNAL_ERROR,
+                f"failed to finalize {session.provider} qr login: "
+                f"{exc.__class__.__name__}",
+                retryable=False,
+            ) from exc
+
+        if not credential or not credential.credential:
             raise DomainError(
                 ErrorCode.ACCOUNT_EXPIRED,
-                "failed to exchange service ticket for quark cookie",
+                f"failed to obtain {session.provider} credential",
                 retryable=False,
             )
 
         # 加密后持久化到账号库（复用现有账号体系）
-        encrypted = self.cipher.encrypt(cookie)
-        account_id = await self._upsert_account(encrypted)
+        encrypted = self.cipher.encrypt(credential.credential)
+        account_id = await self._upsert_account(
+            session.provider, credential.label or f"{session.provider}-qr",
+            encrypted,
+        )
 
         self._sessions.pop(session_id, None)
-        logger.info("qr login session %s completed -> account %s",
-                    session_id, account_id)
+        logger.info(
+            "qr login session %s completed -> account %s",
+            session_id,
+            account_id,
+        )
         return QrLoginResult(
             account_id=account_id,
-            provider="quark",
-            label="quark-qr",
+            provider=session.provider,
+            label=credential.label or f"{session.provider}-qr",
         )
+
+    async def cancel_login(self, session_id: str) -> dict[str, Any]:
+        """主动取消扫码会话（幂等）。"""
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return {"session_id": session_id, "cancelled": False}
+        try:
+            await session.backend.cancel(session.ticket)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "cancel backend failed for session %s", session_id,
+                exc_info=True,
+            )
+        return {"session_id": session_id, "cancelled": True}
 
     # ---- 内部 ----
 
-    async def _exchange_cookie(self, service_ticket: str) -> str:
-        """用 service_ticket 换登录 Cookie（不复用 QuarkPan 的文件写入逻辑）。
-
-        等价于 QuarkPan `_get_user_info_and_cookies` 的网络行为：
-        请求 `https://pan.quark.cn/account/info?st=<ticket>&lw=scan`，
-        响应的 Set-Cookie 会被写入独立 httpx client 的 cookie jar。
-        这里不写任何文件，只提取 quark.cn 域名的 Cookie 拼成字符串。
-        """
-        async with httpx.AsyncClient(
-            timeout=30.0,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/139.0.0.0 Safari/537.36"
-                ),
-                "Accept": "application/json, text/plain, */*",
-            },
-        ) as client:
-            resp = await client.get(
-                "https://pan.quark.cn/account/info",
-                params={"st": service_ticket, "lw": "scan"},
-            )
-            if resp.status_code != 200:
-                logger.warning(
-                    "exchange cookie got status %s", resp.status_code
-                )
-                return ""
-
-            cookies: list[str] = []
-            for cookie in client.cookies.jar:
-                if cookie.domain and "quark.cn" in cookie.domain:
-                    cookies.append(f"{cookie.name}={cookie.value}")
-            return "; ".join(cookies)
-
-    async def _upsert_account(self, encrypted_cookie: str) -> str:
-        """把加密 Cookie 写入账号库（复用现有账号表）。"""
+    async def _upsert_account(
+        self, provider: str, label: str, encrypted_credential: str
+    ) -> str:
         from panbridge.domain.models import Account
 
         account_id = uuid.uuid4().hex
@@ -268,18 +304,14 @@ class QuarkQrAuthService:
             repo = AccountRepository(session)
             account = Account(
                 id=account_id,
-                provider="quark",
-                label="quark-qr",
-                encrypted_credential=encrypted_cookie,
+                provider=provider,
+                label=label,
+                encrypted_credential=encrypted_credential,
             )
             await repo.add(account)
         return account_id
 
-    def _get_session(self, session_id: str) -> QrLoginSession | None:
-        return self._sessions.get(session_id)
-
     def _prune_expired(self) -> None:
-        """清理过期会话（惰性触发，避免内存无限增长）。"""
         now = time.time()
         for sid in [
             s.session_id
