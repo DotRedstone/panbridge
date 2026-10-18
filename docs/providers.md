@@ -19,11 +19,11 @@
 | Provider | 显示名 | 匿名解析 | 文件列表 | 转存 | 账号列表 | 匿名下载 | 账号下载 | 认证方式 | 验证状态 |
 |----------|--------|:---:|:---:|:---:|:---:|:---:|:---:|------|------|
 | `quark` | 夸克网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | **扫码登录** | ✅ 匿名解析真实验证 |
-| `aliyun` | 阿里云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | 手工 refresh_token（扫码规划中） | ✅ 匿名解析真实验证 |
+| `aliyun` | 阿里云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | **扫码登录**（refresh_token） | ✅ 匿名解析真实验证 |
 | `lanzou` | 蓝奏云 | ✅ | ✅ | ❌(无账号) | ❌ | ✅ | - | 无需登录 | ✅ 解析+直链真实验证（下载节点风控） |
 | `123` | 123 云盘 | ✅ | ✅ | ❌(未验证) | ✅ | ✅ | ✅ | 手工 access_token | ✅ 匿名解析+下载协议真实验证 |
 | `baidu` | 百度网盘 | 🟠(风控) | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 BDUSS Cookie | 🟠 匿名触发 9019 风控 |
-| `115` | 115 网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 Cookie（扫码规划中） | ⚠️ 匿名解析+Mock |
+| `115` | 115 网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | **扫码登录**（Cookie） | ⚠️ 匿名解析+Mock |
 | `pikpak` | PikPak | ✅ | ✅ | ❌(未验证) | ❌ | ✅ | ❌ | 无需登录(分享) | ⚠️ 协议+Mock（需住宅IP） |
 | `cloud189` | 天翼云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 账号密码/Cookie | ⚠️ 协议+Mock |
 | `caiyun` | 移动云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | 手工 Authorization | ⚠️ 协议+Mock |
@@ -35,22 +35,23 @@
 | `mock` | Mock | - | - | - | - | - | - | - | 测试用 |
 
 > **认证方式重要说明（如实）**：
-> - **扫码登录目前仅夸克已实现**（`panbridge auth login --provider quark`）。
-> - **已确认官方扫码能力、但尚未接入的平台**（经 SDK 能力调查，2026-10-18）：
->   - `aliyun`（阿里云盘）：底层 SDK `aligo` 提供官方扫码登录
->     （`Auth(show=show_qrcode)`，自定义二维码显示、自动换取 refresh_token）。
->     接入路径已明确：复用 aligo 扫码协议，将换取的 refresh_token 加密入库，
->     隔离 aligo 写 `~/.aligo/` 的明文副作用（与夸克扫码登录同构）。
->   - `115`（115 网盘）：底层 SDK `p115client` 提供官方扫码登录
->     （`login_qrcode()` → 轮询状态 → 换取 Cookie），可加密保存 Cookie。
->     同样待接入。
->   - 上述两平台的扫码登录需**真实账号验证**后才能标记「已实现」，
->     本轮仅完成能力调查，不伪造支持。
-> - 其余平台（百度/天翼/移动/UC/迅雷/微云/光鸭/悟空）未见稳定公开的
->   官方 OAuth 或扫码端点（多为需手工抓取的 Cookie/token 或需申请开放平台
->   app_id），保留**手工凭据导入**路径。
+> - **已实现扫码登录的平台（3 个）**：
+>   - `quark`：`panbridge auth login --provider quark`，复用 quarkpan 二维码协议，
+>     service_ticket 换 Cookie，加密入库。
+>   - `aliyun`：`panbridge auth login --provider aliyun`，复用 aligo 登录端点
+>     （authorize → generate.do → query.do 轮询 → bizExt 取 refresh_token），
+>     **用独立 httpx 实现，不写 `~/.aligo/` 明文目录**，refresh_token 加密入库。
+>   - `115`：`panbridge auth login --provider 115`，复用 p115client 二维码协议
+>     （login_qrcode_token → scan_status 轮询 → scan_result 取 Cookie），
+>     不写 `~/115-cookies.txt` 默认路径，Cookie 加密入库。
+>   - 三者均支持：二维码过期、主动取消、重复扫码（幂等轮询）、凭据失效后重新
+>     登录。**扫码状态流转已通过协议模拟测试验证，但真实扫码留待用户验收**。
+> - 其余平台（百度/天翼/移动/UC/迅雷/微云/光鸭/悟空）未见稳定公开的官方
+>   OAuth 或扫码端点，保留**手工凭据导入**路径：
+>   `panbridge auth import --provider <平台> --credential "<Cookie/token>"`。
 > - 不要把「需要手工 Cookie/token」的平台描述为「扫码即可使用」——
->   这是不准确的。当前扫码登录能力边界：**已实现仅夸克，规划中 aliyun/115**。
+>   这是不准确的。当前扫码登录能力边界：**quark/aliyun/115 已实现（协议），
+>   其余平台需手工凭据导入**。
 
 > 注：UC / 迅雷 / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
 > `INSPECT`（无账号）返回 `ACTION_REQUIRED`；`SAVE` / `SAVE_AND_DOWNLOAD`
@@ -156,10 +157,13 @@
 用户无需手工抓 Cookie 或写 curl。但需注意认证方式边界：
 
 ```bash
-# 1. 扫码登录（仅夸克支持）
+# 1. 扫码登录（支持 quark / aliyun / 115）
 panbridge auth login --provider quark
+panbridge auth login --provider aliyun
+panbridge auth login --provider 115
 
-# 2. 其他平台：手工提供凭据（通过账号配置接口录入 Cookie/token）
+# 2. 其他平台：手工导入凭据（加密入库，不落明文）
+panbridge auth import --provider baidu --credential "BDUSS=..."
 #    aliyun: refresh_token；baidu: BDUSS；115: Cookie；
 #    cloud189: 账号密码/Cookie；caiyun: Authorization；uc: Cookie；
 #    xunlei: refresh_token；weiyun: skey；guangya: access_token；wukong: Cookie/token

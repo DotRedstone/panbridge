@@ -7,11 +7,11 @@
 | 平台 | 登录方式 | 能力 | 验证状态 |
 |------|---------|------|---------|
 | 夸克网盘 | 扫码登录 | 解析 / 转存 / 下载 | ✅ 匿名解析已真实验证 |
-| 阿里云盘 | refresh_token（手动，扫码规划中） | 解析 / 预览（**无需登录**）/ 转存 / 下载 | ✅ 解析已真实验证 |
+| 阿里云盘 | 扫码登录（refresh_token） | 解析 / 预览（**无需登录**）/ 转存 / 下载 | ✅ 解析已真实验证 |
 | 蓝奏云 | 无需登录 | 解析 / 直链下载（**匿名**） | ✅ 解析+直链真实验证（下载节点验证码风控） |
 | 123 云盘 | access_token | 解析 / 直链下载（**匿名**）/ 转存 | ✅ 匿名解析 + 下载协议真实验证 |
 | 百度网盘 | BDUSS Cookie | 解析列表 / 直链 / 转存 | 🟠 匿名触发风控（需 Cookie） |
-| 115 网盘 | Cookie（扫码规划中） | 解析（**匿名**）/ 转存 / 下载 / 文件列表 | ⚠️ 匿名解析 + Mock |
+| 115 网盘 | 扫码登录（Cookie） | 解析（**匿名**）/ 转存 / 下载 / 文件列表 | ⚠️ 匿名解析 + Mock |
 | PikPak | 无需登录（分享） | 解析 / 直链下载（**匿名**）/ 转存 | ⚠️ 协议实现 + Mock |
 | 天翼云盘 | 账号密码 / SSON Cookie | 分享解析（**匿名**）/ 转存 / 下载 / 账号文件列表（**需登录**） | ⚠️ 协议 + Mock |
 | 移动云盘（和彩云） | Authorization(Basic) | 分享解析 / 转存 / 账号文件列表 / 下载（**需登录**） | ⚠️ 协议 + Mock |
@@ -110,30 +110,38 @@ uv run python -m panbridge.worker
 > 密钥并保存到 `~/.config/panbridge/secret.key`（权限 0600，已加入 `.gitignore`）。
 > 多进程/多机共享时再通过环境变量显式注入。
 
-## 夸克账号登录（扫码）
+## 账号登录（扫码）
 
-**扫码登录目前仅支持夸克**（阿里云盘 / 115 的官方扫码能力已调查确认，
-待真实账号验证后接入）。夸克通过扫码登录，无需手动获取 Cookie：
+**扫码登录支持夸克、阿里云盘、115 网盘**（复用各平台 SDK 的官方二维码
+协议，凭据加密入库，不落 SDK 明文目录）：
 
 ```bash
-# 1. 扫码登录（终端显示二维码，夸克 App 扫描后自动完成）
-uv run panbridge auth login
+# 1. 扫码登录（终端显示二维码，用对应 App 扫描后自动完成）
+uv run panbridge auth login --provider quark     # 夸克 App
+uv run panbridge auth login --provider aliyun    # 阿里云盘 App
+uv run panbridge auth login --provider 115       # 115 App
 
 # 2. 查询登录状态
-uv run panbridge auth status
+uv run panbridge auth status --provider quark
 
 # 3. 退出登录（删除本地账号凭据）
-uv run panbridge auth logout
+uv run panbridge auth logout --provider quark
 ```
 
-扫码成功后，Cookie 自动提取、验证并**加密持久化**到本地数据库，接入账号体系。
-后续运行自动加载已登录账号，不再要求手动填写 Cookie。凭据失效时会提示重新扫码。
+扫码成功后，凭据（Cookie / refresh_token）自动提取、验证并**加密持久化**
+到本地数据库。后续运行自动加载已登录账号，不再要求手动填写。凭据失效时
+会提示重新扫码。
 
-> **其他平台的认证方式**：阿里云盘（refresh_token）、百度（BDUSS Cookie）、
-> 115（Cookie）、天翼（账号密码/Cookie）、移动云盘（Authorization）、UC（Cookie）、
-> 迅雷（refresh_token）、微云（skey）、光鸭（access_token）、悟空（Cookie/token）
-> 目前**没有扫码登录**，需通过账号配置接口手工录入凭据。不要把需要手工
-> Cookie/token 的平台描述为「扫码即可使用」。
+> **其他平台的认证方式**：百度（BDUSS Cookie）、天翼（账号密码/Cookie）、
+> 移动云盘（Authorization）、UC（Cookie）、迅雷（refresh_token）、微云（skey）、
+> 光鸭（access_token）、悟空（Cookie/token）目前**没有扫码登录**，通过
+> 手工凭据导入（加密入库，不落明文）：
+>
+> ```bash
+> uv run panbridge auth import --provider baidu --credential "BDUSS=..."
+> ```
+>
+> 不要把需要手工 Cookie/token 的平台描述为「扫码即可使用」。
 
 > 也提供等价 REST API（`POST /v1/auth/qr/start` 等，为 AstrBot 集成预留），
 > 无需 WebUI，详见 [docs/api.md](docs/api.md)。
@@ -149,8 +157,9 @@ curl -X POST http://127.0.0.1:8000/v1/shares/inspect \
   -d '{"text": "https://www.alipan.com/s/MpYfsMSUdmk"}'
 ```
 
-只有「转存到自己网盘」需要登录。阿里云盘当前支持手动提供
-`refresh_token`（通过 `POST /v1/accounts` 加密存储），扫码登录待后续优化。
+只有「转存到自己网盘」需要登录。阿里云盘支持扫码登录
+（`panbridge auth login --provider aliyun`）或手动导入 refresh_token
+（`panbridge auth import --provider aliyun --credential "<refresh_token>"`）。
 
 ## API 示例
 
