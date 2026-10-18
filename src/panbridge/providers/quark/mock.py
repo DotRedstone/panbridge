@@ -60,6 +60,28 @@ class MockProvider(ShareProvider):
     async def list_share_files(
         self, share_id: str, password: str | None, parent_id: str | None = None
     ) -> list[ShareFile]:
+        # 支持按 parent_id 返回子目录内容，用于测试目录递归遍历。
+        prefix = share_id
+        if parent_id == f"{prefix}-d1":
+            # d1 目录下有一个子目录 d1a 和一个文件 f3
+            return [
+                ShareFile(
+                    file_id=f"{prefix}-d1a", name="sub", is_dir=True,
+                    parent_id=f"{prefix}-d1",
+                ),
+                ShareFile(
+                    file_id=f"{prefix}-f3", name="deep.txt", size=32,
+                    parent_id=f"{prefix}-d1",
+                ),
+            ]
+        if parent_id == f"{prefix}-d1a":
+            # d1a 目录下有一个文件 f4
+            return [
+                ShareFile(
+                    file_id=f"{prefix}-f4", name="deepest.bin", size=16,
+                    parent_id=f"{prefix}-d1a",
+                ),
+            ]
         share = await self.inspect_share(share_id, password)
         return share.files
 

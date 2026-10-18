@@ -168,21 +168,39 @@ class Worker:
         if task.action == Action.INSPECT:
             return {"title": share.title, "files": len(share.files)}
 
-        # 构建「源文件选择」：默认选中分享根目录下的所有条目；若任务显式
-        # 指定了 selection（源 fid 列表），则按它过滤。
-        account = account or (
-            await self._get_account(task.account_id)
-            if task.account_id
-            else None
-        )
-        selected_fids = task.selection or [
-            f.file_id for f in share.files if not f.is_dir
-        ]
-        selected_fid_set = set(selected_fids)
+        # 构建「源文件选择」：任务显式指定 selection（源 fid 列表）时按它
+        # 过滤；未指定则选中分享中所有文件（含子目录，由 _collect_entries
+        # 递归收集）。空 set 表示「全选」。
+        selected_fid_set: set[str] = set()
+        if task.selection is not None:
+            selected_fid_set = set(task.selection)
 
+        # SAVE / SAVE_AND_DOWNLOAD 需要账号；提前获取，供目录遍历
+        # （需登录解析的平台）与后续转存使用。
         if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
             if account is None:
                 account = await self._get_account(task.account_id)
+
+        # 转存/下载需要显式的文件列表（转存接口按 fid 逐个转存）。
+        # 未指定 selection 时，转存阶段也需把子目录文件纳入，故先递归
+        # 收集一次完整文件列表，得到源 fid 列表供转存使用。
+        if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
+            # 提前遍历目录树拿到所有源 fid（转存接口需要完整列表）。
+            pre_entries = await self._collect_entries(
+                provider,
+                extracted.share_id,
+                extracted.password,
+                share,
+                selected_fid_set,
+                account,
+            )
+            selected_fids = [e.source_fid for e in pre_entries]
+        else:
+            selected_fids = list(selected_fid_set) or [
+                f.file_id for f in share.files if not f.is_dir
+            ]
+
+        if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
             await self._set_status(task.id, TaskStatus.SAVING)
             destination = await self._resolve_destination(
                 provider, account, task

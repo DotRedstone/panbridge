@@ -144,8 +144,8 @@ async def test_anonymous_download_lifecycle(tmp_path):
     await _run_worker_once(worker)
     result = await service.get_task(task.id)
     assert result.status == TaskStatus.COMPLETED
-    # 转存了 2 个非目录文件（mock 的 f1/f2）
-    assert len(downloader.calls) == 2
+    # 递归下载根目录 f1/f2 + 子目录 f3/f4 = 4 个文件
+    assert len(downloader.calls) == 4
     # 文件名应来自 get_share_download_info，而非 fid 裸名
     names = [f["name"] for f in result.result["files"]]
     assert "mock001-f1.bin" in names
@@ -209,8 +209,8 @@ async def test_save_and_download_lifecycle(env, tmp_path):
     await _run_worker_once(worker)
     result = await service.get_task(task.id)
     assert result.status == TaskStatus.COMPLETED
-    # 转存了 2 个非目录文件，下载器应收到 2 次调用
-    assert len(fake.calls) == 2
+    # 递归转存并下载：根目录 f1/f2 + 子目录 f3/f4 = 4 个文件
+    assert len(fake.calls) == 4
 
 
 class _RecordingMockProvider(MockProvider):
@@ -303,3 +303,75 @@ def test_local_conflict_rename(tmp_path):
 
     # overwrite 默认返回原路径
     assert worker._resolve_local_path(name, "overwrite") == str(existing)
+
+
+class _RecordingDownloader:
+    """记录下载的 destination 路径，模拟真实落盘。"""
+
+    def __init__(self):
+        self.destinations: list[str] = []
+
+    async def download(self, url, destination, **kwargs):
+        self.destinations.append(destination)
+        # 模拟实际创建文件
+        import os
+
+        os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
+        with open(destination, "wb") as f:
+            f.write(b"x")
+        yield {"downloaded": 1, "total": 1}
+
+
+@pytest.mark.asyncio
+async def test_recursive_directory_download_preserves_structure(tmp_path):
+    """多级目录分享应完整下载并保留目录结构。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    registry = ProviderRegistry()
+    registry.register(_AnonDownloadProvider())
+
+    downloader = _RecordingDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.DOWNLOAD,
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    assert result.status == TaskStatus.COMPLETED
+
+    # 根目录 f1/f2 + 子目录 d1/f3 + 孙目录 d1a/f4 = 4 个文件
+    files = result.result["files"]
+    assert len(files) == 4
+
+    # 相对路径应保留目录结构
+    rel_paths = {f["rel_path"] for f in files}
+    assert "video.mkv" in rel_paths
+    assert "subtitle.srt" in rel_paths
+    assert "folder/deep.txt" in rel_paths
+    assert "folder/sub/deepest.bin" in rel_paths
+
+    # 落盘路径应在 download_dir 下保留结构
+    import os
+
+    assert os.path.isfile(
+        os.path.join(worker.download_dir, "folder", "deep.txt")
+    )
+    assert os.path.isfile(
+        os.path.join(worker.download_dir, "folder", "sub", "deepest.bin")
+    )
+
+    await worker.stop()
+    await engine.dispose()

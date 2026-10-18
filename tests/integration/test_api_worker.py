@@ -134,9 +134,9 @@ def test_http_to_download_lifecycle(app_env, tmp_path):
     assert resp2.status_code == 200
     body = resp2.json()
     assert body["status"] == "completed", body
-    # 下载了 2 个非目录文件
+    # 递归下载根目录 f1/f2 + 子目录 f3/f4 = 4 个文件
     files = body["result"]["files"]
-    assert len(files) == 2
+    assert len(files) == 4
 
     # 4. 文件已落盘（非空）
     import os
@@ -148,4 +148,4 @@ def test_http_to_download_lifecycle(app_env, tmp_path):
     # 5. 通过 HTTP 获取任务文件列表
     resp3 = client.get(f"/v1/tasks/{task_id}/files")
     assert resp3.status_code == 200
-    assert len(resp3.json()["items"]) == 2
+    assert len(resp3.json()["items"]) == 4
