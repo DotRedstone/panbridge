@@ -290,22 +290,30 @@ class PikPakProvider(ShareProvider):
         )
 
     async def get_share_download_info(
-        self, share_id: str, password: str | None, file_id: str
+        self,
+        share_id: str,
+        password: str | None,
+        file_id: str,
+        file: ShareFile | None = None,
     ) -> dict[str, Any]:
         """解析分享中单个文件的直链（匿名，无需登录）。
 
         重新解析 captcha/pass_token，然后通过 file_info 接口拿到
-        web_content_link。file_id 为分享文件的 id（inspect 提供）。
+        web_content_link。`file` 参数提供 name/size（inspect 已解析），
+        避免返回空元数据；下载所需的 pass_token/captcha 在本次调用内
+        重新获取（临时凭据，不长期缓存）。
         """
         captcha = await self._get_captcha_token("GET:/drive/v1/share")
         pass_token = await self._get_pass_code_token(share_id, password, captcha)
         link = await self.resolve_file_download_url(
             share_id, file_id, pass_token, captcha
         )
+        name = file.name if file is not None else None
+        size = file.size if file is not None else None
         return {
             "url": link,
-            "name": None,
-            "size": None,
+            "name": name,
+            "size": size,
             "checksum": None,
             "headers": {"User-Agent": _HEADERS["User-Agent"]},
         }

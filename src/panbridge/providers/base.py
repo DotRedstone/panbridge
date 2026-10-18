@@ -81,7 +81,11 @@ class ShareProvider(ABC):
         )
 
     async def get_share_download_info(
-        self, share_id: str, password: str | None, file_id: str
+        self,
+        share_id: str,
+        password: str | None,
+        file_id: str,
+        file: ShareFile | None = None,
     ) -> dict[str, Any]:
         """解析分享中单个文件的下载信息（匿名，无需登录）。
 
@@ -90,12 +94,23 @@ class ShareProvider(ABC):
         依赖分享上下文（share_id/password 及 Provider 内部解析出的
         token/pass_token/etag/s3keyFlag 等）。
 
+        参数：
+        - `file_id`：分享中目标文件的标识（由 inspect/list_share_files 提供）。
+        - `file`：可选，inspect 阶段已解析出的 `ShareFile` 对象。其 `raw`
+          字段携带下载所需的平台私有元数据（etag/s3keyFlag/pass_token/
+          直链等）。调用方（Worker）在目录遍历时已拿到这些元数据，传入可
+          避免 Provider 重复递归扫描整棵分享目录来重新定位文件。
+          Provider 应优先复用 `file.raw`，仅在 `file` 缺失或元数据不足时
+          才回退到重新解析。
+
         返回字典应包含 `url`（必填）与可选 `name`/`size`/`checksum`/
         `headers`。默认抛 UNSUPPORTED_OPERATION —— 表示该平台不支持
         匿名分享直链下载（需先转存再下载）。
 
-        实现注意：Provider 实例是无状态的，本方法应在需要时重新解析
-        分享上下文（token 等），不得依赖跨方法调用的实例状态。
+        实现注意：Provider 实例是无状态的，本方法不得依赖跨方法调用的
+        实例状态；所有分享上下文要么来自 `file.raw`，要么在本次调用内
+        重新解析。临时下载凭据（captcha/pass_token/直链）仅在本次调用
+        内有效，不得长期缓存。
         """
         from panbridge.domain.errors import DomainError, ErrorCode
 

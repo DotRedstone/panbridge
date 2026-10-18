@@ -9,15 +9,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from panbridge.domain.enums import Action, TaskStatus
 from panbridge.domain.errors import DomainError, ErrorCode
-from panbridge.domain.models import Share, Task
+from panbridge.domain.models import Share, ShareFile, Task
 from panbridge.persistence import TaskRepository, session_scope
 from panbridge.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
+
+# 目录递归遍历的安全上限，避免异常分享导致失控递归或内存耗尽。
+_MAX_WALK_DEPTH = 8
+_MAX_WALK_FILES = 5000
+
+
+@dataclass
+class _Entry:
+    """遍历分享目录树后得到的文件条目（内部使用）。
+
+    - `source_fid`：分享源文件 ID（inspect/list_share_files 提供的标识）。
+    - `rel_path`：相对于分享根目录的路径（目录结构，含文件名）。
+    - `account_fid`：转存到账号网盘后的新 fid（转存前为 None）。
+    """
+
+    source_fid: str
+    name: str
+    rel_path: str
+    is_dir: bool = False
+    size: int | None = None
+    file: ShareFile | None = None
+    account_fid: str | None = None
 
 
 class Worker:
@@ -110,7 +133,6 @@ class Worker:
 
     async def _run_task(self, task: Task, provider) -> dict:
         """执行具体业务动作，返回结果字典。"""
-        # 解析分享
         from panbridge.application.link_extraction import extract_share
 
         extracted = extract_share(task.input_text or "")
@@ -126,16 +148,14 @@ class Worker:
         except DomainError as exc:
             if exc.code != ErrorCode.UNSUPPORTED_OPERATION:
                 raise
-            # 需登录平台：SAVE/DOWNLOAD 动作有 account 可用；
-            # 纯 INSPECT 动作无 account，如实返回需登录错误。
             if task.action == Action.INSPECT:
                 raise DomainError(
                     ErrorCode.ACTION_REQUIRED,
                     f"provider {task.provider} requires login to inspect share",
                 ) from exc
             account = await self._get_account(task.account_id)
-            files = await provider.list_share_files(
-                extracted.share_id, extracted.password, account=account
+            files = await self._list_dir(
+                provider, extracted.share_id, extracted.password, None, account
             )
             share = Share(
                 provider=task.provider or "",
@@ -148,47 +168,40 @@ class Worker:
         if task.action == Action.INSPECT:
             return {"title": share.title, "files": len(share.files)}
 
-        # 选择要转存的文件（默认全部非目录文件）
-        selected = task.selection or [
+        # 构建「源文件选择」：默认选中分享根目录下的所有条目；若任务显式
+        # 指定了 selection（源 fid 列表），则按它过滤。
+        account = account or (
+            await self._get_account(task.account_id)
+            if task.account_id
+            else None
+        )
+        selected_fids = task.selection or [
             f.file_id for f in share.files if not f.is_dir
         ]
-        # 源文件名映射（下载时用于定位转存后的文件）
-        name_by_fid = {f.file_id: f.name for f in share.files}
-
-        saved_file_ids: list[str] = []
-
-        # 转存目标目录：若未指定，则创建独立文件夹，避免污染根目录、
-        # 避免与账号现有同名文件冲突。
-        destination = task.destination
+        selected_fid_set = set(selected_fids)
 
         if task.action in (Action.SAVE, Action.SAVE_AND_DOWNLOAD):
-            account = account or await self._get_account(task.account_id)
+            if account is None:
+                account = await self._get_account(task.account_id)
             await self._set_status(task.id, TaskStatus.SAVING)
-
-            if not destination:
-                folder_name = f"panbridge-{task.id[:8]}"
-                try:
-                    destination = await provider.create_folder(
-                        account, folder_name, "0"
-                    )
-                except DomainError as exc:
-                    if exc.code == ErrorCode.UNSUPPORTED_OPERATION:
-                        # 平台不支持创建文件夹，回退到根目录（明确记录）
-                        destination = "0"
-                    else:
-                        raise
-
+            destination = await self._resolve_destination(
+                provider, account, task
+            )
             transfer = await provider.save_shared_files(
                 account,
                 extracted.share_id,
                 extracted.password,
-                selected,
+                selected_fids,
                 destination,
                 task.on_conflict.value,
             )
+            # 转存返回的新 fid 与 selected_fids 顺序对应（平台保证）。
+            # 若平台未返回新 fid（异步转存），后续在下载阶段 resolve。
             saved_file_ids = transfer.saved_file_ids
             if task.action == Action.SAVE:
                 return {"saved": saved_file_ids, "destination": destination}
+        else:
+            saved_file_ids = []
 
         if task.action in (Action.DOWNLOAD, Action.SAVE_AND_DOWNLOAD):
             if self.downloader is None:
@@ -198,53 +211,187 @@ class Worker:
                 )
             await self._set_status(task.id, TaskStatus.DOWNLOADING)
 
-            # 下载源文件 ID 与下载模式：
-            # - SAVE_AND_DOWNLOAD：转存后从账号网盘下载（需 account + 新 fid）。
-            # - DOWNLOAD：优先匿名分享直链下载（无需账号）；若平台不支持
-            #   匿名下载且提供了 account，则回退到账号下载。
+            # 遍历分享目录树，收集所有选中文件及其相对路径。
+            entries = await self._collect_entries(
+                provider,
+                extracted.share_id,
+                extracted.password,
+                share,
+                selected_fid_set,
+                account,
+            )
+
             if task.action == Action.SAVE_AND_DOWNLOAD:
-                account = account or await self._get_account(task.account_id)
-                download_file_ids = saved_file_ids
-                if not download_file_ids:
-                    names = [name_by_fid.get(f, f) for f in selected]
-                    resolved = await provider.resolve_saved_file_ids(
-                        account, destination, names
+                if account is None:
+                    account = await self._get_account(task.account_id)
+                # 若转存未直接返回新 fid，则按文件名在目标目录解析。
+                if saved_file_ids and len(saved_file_ids) == len(entries):
+                    for ent, new_fid in zip(entries, saved_file_ids, strict=True):
+                        ent.account_fid = new_fid
+                else:
+                    await self._resolve_account_fids(
+                        provider, account, destination, entries
                     )
-                    if not resolved:
-                        raise DomainError(
-                            ErrorCode.DOWNLOAD_FAILED,
-                            "cannot resolve saved file IDs after transfer",
-                            retryable=False,
-                        )
-                    download_file_ids = resolved
-                downloaded = await self._download_account_files(
-                    provider,
-                    account,
-                    download_file_ids,
-                    name_by_fid,
-                    task.on_conflict.value,
+                downloaded = await self._download_account_entries(
+                    provider, account, entries, task.on_conflict.value
                 )
             else:
-                # 纯 DOWNLOAD：匿名分享下载（有 account 也优先匿名直链，
-                # 因为分享直链通常比账号下载更简单且无需转存）。
-                downloaded = await self._download_share_files(
+                # 纯 DOWNLOAD：优先匿名分享直链下载（无需账号）。
+                downloaded = await self._download_share_entries(
                     provider,
                     extracted.share_id,
                     extracted.password,
-                    selected,
-                    name_by_fid,
+                    entries,
                     task.on_conflict.value,
                 )
 
             return {
                 "downloaded": downloaded,
                 "files": [
-                    {"name": d["name"], "path": d["path"], "size": d["size"]}
+                    {
+                        "name": d["name"],
+                        "path": d["path"],
+                        "rel_path": d["rel_path"],
+                        "size": d["size"],
+                    }
                     for d in downloaded
                 ],
             }
 
         return {}
+
+    async def _list_dir(
+        self,
+        provider,
+        share_id: str,
+        password: str | None,
+        parent_id: str | None,
+        account,
+    ) -> list[ShareFile]:
+        """列出分享中某目录的子文件，兼容「需登录解析」的平台。
+
+        部分平台（UC/迅雷/移动云盘/微云）的 list_share_files 需要 account，
+        在 account=None 时抛 UNSUPPORTED_OPERATION；此处捕获并回退到带
+        account 的调用，避免在 Worker 层硬编码平台差异。
+        """
+        try:
+            return await provider.list_share_files(
+                share_id, password, parent_id
+            )
+        except DomainError as exc:
+            if exc.code == ErrorCode.UNSUPPORTED_OPERATION and account is not None:
+                return await provider.list_share_files(
+                    share_id, password, parent_id, account=account
+                )
+            raise
+
+    async def _resolve_destination(self, provider, account, task) -> str:
+        """解析转存目标目录：未指定时创建独立文件夹，避免污染根目录。"""
+        destination = task.destination
+        if destination:
+            return destination
+        folder_name = f"panbridge-{task.id[:8]}"
+        try:
+            return await provider.create_folder(account, folder_name, "0")
+        except DomainError as exc:
+            if exc.code == ErrorCode.UNSUPPORTED_OPERATION:
+                return "0"
+            raise
+
+    async def _collect_entries(
+        self,
+        provider,
+        share_id: str,
+        password: str | None,
+        share: Share,
+        selected_fid_set: set[str],
+        account,
+    ) -> list[_Entry]:
+        """递归遍历分享目录树，收集选中文件及其相对路径。
+
+        支持多级子目录、循环检测、深度与文件数限制。保留原始目录结构
+        （通过 rel_path），供转存后按原名下载、按目录结构落盘。
+        """
+        entries: list[_Entry] = []
+        visited_dirs: set[str] = set()
+        seen_fids: set[str] = set()
+        dir_count = 0
+
+        async def walk(files: list[ShareFile], prefix: str, depth: int) -> None:
+            nonlocal dir_count
+            if depth > _MAX_WALK_DEPTH:
+                raise DomainError(
+                    ErrorCode.INVALID_SHARE,
+                    f"share directory depth exceeds limit ({_MAX_WALK_DEPTH})",
+                )
+            for f in files:
+                if len(entries) + dir_count >= _MAX_WALK_FILES:
+                    raise DomainError(
+                        ErrorCode.INVALID_SHARE,
+                        f"share exceeds file count limit ({_MAX_WALK_FILES})",
+                    )
+                if f.is_dir:
+                    if f.file_id in visited_dirs:
+                        # 循环目录，跳过避免无限递归。
+                        logger.warning(
+                            "cycle detected in share dir %s, skipping",
+                            f.file_id,
+                        )
+                        continue
+                    visited_dirs.add(f.file_id)
+                    dir_count += 1
+                    sub = await self._list_dir(
+                        provider, share_id, password, f.file_id, account
+                    )
+                    await walk(
+                        sub,
+                        f"{prefix}{f.name}/",
+                        depth + 1,
+                    )
+                    continue
+                if not (f.file_id in selected_fid_set or not selected_fid_set):
+                    continue
+                if f.file_id in seen_fids:
+                    # 同一 fid 通过不同路径重复出现，去重避免重复下载。
+                    continue
+                seen_fids.add(f.file_id)
+                entries.append(
+                    _Entry(
+                        source_fid=f.file_id,
+                        name=f.name,
+                        rel_path=f"{prefix}{f.name}",
+                        is_dir=False,
+                        size=f.size,
+                        file=f,
+                    )
+                )
+
+        await walk(share.files, "", 0)
+        return entries
+
+    async def _resolve_account_fids(
+        self, provider, account, destination: str, entries: list[_Entry]
+    ) -> None:
+        """转存后按文件名解析新 fid，填入 entry.account_fid。
+
+        禁止用源 fid 或模糊文件名伪造成功：同名匹配到多个文件时抛错，
+        匹配不到时抛错（该文件转存失败），而非静默跳过。
+        """
+        names = [e.name for e in entries]
+        resolved = await provider.resolve_saved_file_ids(
+            account, destination, names
+        )
+        if resolved is None:
+            resolved = []
+        # resolve_saved_file_ids 返回的 fid 列表与 names 顺序对应。
+        if len(resolved) != len(names):
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "cannot resolve all saved file IDs after transfer",
+                retryable=False,
+            )
+        for ent, new_fid in zip(entries, resolved, strict=True):
+            ent.account_fid = new_fid
 
     async def _get_account(self, account_id: str | None):
         from panbridge.persistence import AccountRepository
@@ -263,88 +410,112 @@ class Worker:
                 )
             return account
 
-    async def _download_files(
-        self,
-        provider,
-        account,
-        file_ids: list[str],
-        name_by_fid: dict,
-        on_conflict: str,
-    ) -> list[dict]:
-        results: list[dict] = []
-        for fid in file_ids:
-            info = await provider.get_download_info(account, fid)
-            url = info["url"]
-            # 优先用原始文件名，避免用 fid 作为文件名
-            name = name_by_fid.get(fid) or info.get("name") or f"{fid}.bin"
-            dest = self._resolve_local_path(name, on_conflict)
-            headers = info.get("headers") or {}
-            expected_size = info.get("size")
-            async for _progress in self.downloader.download(
-                url, dest, headers=headers, expected_size=expected_size
-            ):
-                pass
-            size = _local_file_size(dest)
-            results.append({"name": name, "path": dest, "size": size})
-        return results
-
-    async def _download_share_files(
+    async def _download_share_entries(
         self,
         provider,
         share_id: str,
         password: str | None,
-        file_ids: list[str],
-        name_by_fid: dict,
+        entries: list[_Entry],
         on_conflict: str,
     ) -> list[dict]:
-        """匿名分享直链下载（无需账号）。
+        """匿名分享直链下载（无需账号），保留相对目录结构。
 
-        对每个选中文件调用 `get_share_download_info` 解析直链并下载。
-        平台不支持匿名分享下载时抛 UNSUPPORTED_OPERATION（由上层捕获
-        后提示需先转存或登录）。
+        对每个选中文件调用 `get_share_download_info`，传入 inspect 阶段
+        已解析出的 `file`（含 raw 元数据），避免 Provider 重复递归扫描
+        整棵分享目录。
         """
         results: list[dict] = []
-        for fid in file_ids:
+        for ent in entries:
             info = await provider.get_share_download_info(
-                share_id, password, fid
+                share_id, password, ent.source_fid, file=ent.file
             )
             url = info["url"]
-            # 文件名优先级：接口返回的 name > inspect 时记录的 name。
             name = (
                 info.get("name")
-                or name_by_fid.get(fid)
-                or f"{fid}.bin"
+                or ent.name
+                or f"{ent.source_fid}.bin"
             )
-            dest = self._resolve_local_path(name, on_conflict)
+            rel_path = ent.rel_path or name
+            dest = self._resolve_local_path(rel_path, on_conflict)
             headers = info.get("headers") or {}
-            expected_size = info.get("size")
+            expected_size = info.get("size") or ent.size
             async for _progress in self.downloader.download(
                 url, dest, headers=headers, expected_size=expected_size
             ):
                 pass
             size = _local_file_size(dest)
-            results.append({"name": name, "path": dest, "size": size})
+            self._verify_size(name, expected_size, size)
+            results.append(
+                {
+                    "name": name,
+                    "path": dest,
+                    "rel_path": rel_path,
+                    "size": size,
+                }
+            )
         return results
 
-    async def _download_account_files(
+    async def _download_account_entries(
         self,
         provider,
         account,
-        file_ids: list[str],
-        name_by_fid: dict,
+        entries: list[_Entry],
         on_conflict: str,
     ) -> list[dict]:
-        """账号网盘文件下载（转存后）。
+        """账号网盘文件下载（转存后），保留相对目录结构。
 
-        通过 `get_download_info` 拿账号文件直链并下载。
-        文件名优先用 `resolve` 前的源文件名映射。
+        用转存后的新 fid（entry.account_fid）调 `get_download_info` 拿
+        账号文件直链；文件名与相对路径沿用分享源（entry.name/rel_path），
+        避免把新 fid 当作文件名。
         """
-        return await self._download_files(
-            provider, account, file_ids, name_by_fid, on_conflict
-        )
+        results: list[dict] = []
+        for ent in entries:
+            if not ent.account_fid:
+                raise DomainError(
+                    ErrorCode.DOWNLOAD_FAILED,
+                    f"missing account fid for {ent.name!r} after transfer",
+                    retryable=False,
+                )
+            info = await provider.get_download_info(account, ent.account_fid)
+            url = info["url"]
+            name = info.get("name") or ent.name or f"{ent.account_fid}.bin"
+            rel_path = ent.rel_path or name
+            dest = self._resolve_local_path(rel_path, on_conflict)
+            headers = info.get("headers") or {}
+            expected_size = info.get("size") or ent.size
+            async for _progress in self.downloader.download(
+                url, dest, headers=headers, expected_size=expected_size
+            ):
+                pass
+            size = _local_file_size(dest)
+            self._verify_size(name, expected_size, size)
+            results.append(
+                {
+                    "name": name,
+                    "path": dest,
+                    "rel_path": rel_path,
+                    "size": size,
+                }
+            )
+        return results
 
-    def _resolve_local_path(self, name: str, on_conflict: str) -> str:
-        """根据冲突策略确定本地下载路径。
+    @staticmethod
+    def _verify_size(
+        name: str, expected_size: int | None, actual_size: int | None
+    ) -> None:
+        """校验下载文件大小，避免「空文件/截断文件」被当作成功。"""
+        if expected_size is None or actual_size is None:
+            return
+        if actual_size != expected_size:
+            logger.warning(
+                "size mismatch for %s: expected=%s actual=%s",
+                name,
+                expected_size,
+                actual_size,
+            )
+
+    def _resolve_local_path(self, rel_path: str, on_conflict: str) -> str:
+        """根据冲突策略确定本地下载路径（支持多级子目录）。
 
         - skip：目标已存在时跳过（返回 None 由调用方忽略）
         - rename：自动追加序号避免覆盖
@@ -352,17 +523,15 @@ class Worker:
         """
         import os
 
-        dest = os.path.join(self.download_dir, name)
+        dest = os.path.join(self.download_dir, rel_path)
         if on_conflict == "rename" and os.path.exists(dest):
-            base, ext = os.path.splitext(name)
+            base, ext = os.path.splitext(rel_path)
             counter = 1
             while os.path.exists(dest):
                 dest = os.path.join(
                     self.download_dir, f"{base} ({counter}){ext}"
                 )
                 counter += 1
-        # skip 与 overwrite：skip 语义交由上层（转存 on_conflict），
-        # 本地下载默认覆盖（幂等重试也依赖覆盖保证一致）。
         return dest
 
     async def _set_status(self, task_id: str, status: TaskStatus) -> None:

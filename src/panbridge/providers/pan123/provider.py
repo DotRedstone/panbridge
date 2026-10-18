@@ -382,19 +382,28 @@ class Pan123Provider(ShareProvider):
         return None
 
     async def get_share_download_info(
-        self, share_id: str, password: str | None, file_id: str
+        self,
+        share_id: str,
+        password: str | None,
+        file_id: str,
+        file: ShareFile | None = None,
     ) -> dict[str, Any]:
         """解析分享中单个文件的直链（匿名，无需登录）。
 
-        流程：重新解析分享短码 → 递归查找目标文件（含 etag/s3keyFlag）
-        → POST /api/share/download/info 拿直链。
-        file_id 为目标文件的 FileId（由 inspect_share 的 files 提供）。
+        优先复用 `file.raw`（inspect/目录遍历时已解析出的 etag/s3keyFlag/
+        size/fileId）直接解析直链，避免重复递归扫描整棵分享目录。
+
+        仅当 `file` 缺失时才回退到递归查找（兼容旧调用方）。
         """
         full_key = share_id
         if password and "-" not in share_id:
             full_key = f"{share_id}-{password}"
 
-        target = await self._find_file_recursive(full_key, password, str(file_id))
+        target = file
+        if target is None:
+            target = await self._find_file_recursive(
+                full_key, password, str(file_id)
+            )
         if target is None:
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,

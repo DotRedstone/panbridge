@@ -193,18 +193,22 @@ class LanzouProvider(ShareProvider):
         )
 
     async def get_share_download_info(
-        self, share_id: str, password: str | None, file_id: str
+        self,
+        share_id: str,
+        password: str | None,
+        file_id: str,
+        file: ShareFile | None = None,
     ) -> dict[str, Any]:
         """解析蓝奏云分享单文件直链（匿名）。
 
         share_id 为完整分享 URL，file_id 为 inspect 时得到的直链或文件 key。
-        重新解析分享页以获得真实文件名与最新直链。
+        `file` 提供 name（inspect 已解析）；直链在本次调用内重新解析
+        （蓝奏云直链有时效，需刷新），不长期缓存。
         """
-        # 蓝奏云分享页仅单文件，file_id 与 share_id 指向同一资源。
         info = await self._fetch_file_info(share_id, password)
         return {
             "url": info["direct_url"],
-            "name": info["name"],
+            "name": info["name"] or (file.name if file is not None else None),
             "size": None,
             "checksum": None,
             "headers": {

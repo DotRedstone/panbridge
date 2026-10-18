@@ -375,12 +375,17 @@ class AliyunProvider(ShareProvider):
         }
 
     async def get_share_download_info(
-        self, share_id: str, password: str | None, file_id: str
+        self,
+        share_id: str,
+        password: str | None,
+        file_id: str,
+        file: ShareFile | None = None,
     ) -> dict[str, Any]:
         """解析分享中单个文件的直链（匿名，无需登录）。
 
         通过 share_token + get_share_link_download_url 拿匿名直链。
-        file_id 为分享文件的 file_id（inspect 提供）。
+        `file` 参数提供 name（inspect 已解析），避免返回空元数据；
+        share_token 为临时凭据，在本次调用内获取，不长期缓存。
         """
         token = await self._get_share_token(share_id, password)
         payload = {
@@ -406,8 +411,8 @@ class AliyunProvider(ShareProvider):
             )
         return {
             "url": url,
-            "name": None,
-            "size": data.get("size"),
+            "name": file.name if file is not None else None,
+            "size": data.get("size") or (file.size if file is not None else None),
             "checksum": None,
             "headers": {"Referer": "https://aliyundrive.com"},
         }

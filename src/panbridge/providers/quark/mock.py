@@ -122,7 +122,11 @@ class MockProvider(ShareProvider):
         }
 
     async def get_share_download_info(
-        self, share_id: str, password: str | None, file_id: str
+        self,
+        share_id: str,
+        password: str | None,
+        file_id: str,
+        file: ShareFile | None = None,
     ) -> dict[str, Any]:
         """模拟匿名分享直链下载（无需账号）。"""
         if file_id.startswith("downloadfail"):
@@ -131,10 +135,11 @@ class MockProvider(ShareProvider):
                 "download link expired",
                 retryable=True,
             )
+        name = file.name if file is not None else f"{file_id}.bin"
         return {
             "url": f"https://download.mock.local/{file_id}",
-            "name": f"{file_id}.bin",
-            "size": 1024,
+            "name": name,
+            "size": file.size if file is not None else 1024,
             "checksum": "sha256:deadbeef",
         }
 

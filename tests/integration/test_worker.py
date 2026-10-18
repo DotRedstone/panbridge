@@ -104,7 +104,7 @@ class _AnonDownloadProvider(MockProvider):
     get_share_download_info 返回直链与文件名，无需账号即可下载。
     """
 
-    async def get_share_download_info(self, share_id, password, file_id):
+    async def get_share_download_info(self, share_id, password, file_id, file=None):
         return {
             "url": f"https://download.mock.local/{file_id}",
             "name": f"{file_id}.bin",
