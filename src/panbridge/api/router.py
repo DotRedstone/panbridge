@@ -16,6 +16,7 @@ from panbridge.api.schemas import (
     InspectResponse,
     LoginStatusResponse,
     LogoutResponse,
+    QrCancelResponse,
     QrLoginStartResponse,
     QrLoginStatusResponse,
     TaskCreateRequest,
@@ -222,6 +223,20 @@ def build_router(
             session_id=session_id,
             status=status.get("status", "waiting"),
         )
+
+    @router.post(
+        "/v1/auth/qr/{session_id}/cancel",
+        response_model=QrCancelResponse,
+    )
+    async def cancel_qr_login(session_id: str, _=Depends(auth)):
+        if auth_service is None:
+            raise DomainError(
+                ErrorCode.UNSUPPORTED_OPERATION,
+                "qr login not available (credential cipher not configured)",
+                retryable=False,
+            )
+        result = await auth_service.cancel_qr_login(session_id)
+        return QrCancelResponse(**result)
 
     @router.get("/v1/auth/status", response_model=LoginStatusResponse)
     async def login_status(provider: str = "quark", _=Depends(auth)):

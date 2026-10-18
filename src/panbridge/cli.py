@@ -1,11 +1,12 @@
 """panbridge 命令行入口。
 
-提供扫码登录、登录状态查询、退出登录三个子命令，无需 WebUI。
+提供扫码登录、凭据导入、登录状态查询、退出登录，无需 WebUI。
 
 用法：
     panbridge auth login --provider quark    # 终端显示二维码，夸克 App 扫码
     panbridge auth login --provider aliyun   # 阿里云盘 App 扫码
     panbridge auth login --provider 115      # 115 App 扫码
+    panbridge auth import --provider baidu --credential "BDUSS=..."  # 手工导入
     panbridge auth status                    # 查询当前登录状态
     panbridge auth logout                    # 退出登录（删除本地账号）
 """
@@ -55,13 +56,16 @@ def _build(settings: Settings):
     registry = build_registry(cipher)
     service = ApplicationService(registry, sessionmaker)
     auth = build_auth_service(service, registry, sessionmaker, cipher)
-    return engine, auth
+    return engine, auth, service, cipher
 
 
 async def _login(provider: str) -> int:
     settings = Settings.from_env()
-    engine, auth = _build(settings)
+    engine, auth, _service, _cipher = _build(settings)
     await init_db(engine)
+    if auth is None:
+        print("❌ 未配置 PANBRIDGE_SECRET_KEY，无法加密存储账号凭据。")
+        return 1
     try:
         info = await auth.start_qr_login(provider)
         session_id = info["session_id"]
@@ -94,8 +98,11 @@ async def _login(provider: str) -> int:
 
 async def _status(provider: str) -> int:
     settings = Settings.from_env()
-    engine, auth = _build(settings)
+    engine, auth, _service, _cipher = _build(settings)
     await init_db(engine)
+    if auth is None:
+        print("❌ 未配置 PANBRIDGE_SECRET_KEY，无法查询登录状态。")
+        return 1
     try:
         status = await auth.login_status(provider)
         if status.get("logged_in"):
@@ -117,11 +124,42 @@ async def _status(provider: str) -> int:
 
 async def _logout(provider: str) -> int:
     settings = Settings.from_env()
-    engine, auth = _build(settings)
+    engine, auth, _service, _cipher = _build(settings)
     await init_db(engine)
+    if auth is None:
+        print("❌ 未配置 PANBRIDGE_SECRET_KEY，无法退出登录。")
+        return 1
     try:
         result = await auth.logout(provider)
         print(f"✅ 已退出登录（移除 {result['removed']} 个账号）")
+        return 0
+    finally:
+        await engine.dispose()
+
+
+async def _import(provider: str, label: str, credential: str) -> int:
+    """安全导入手工凭据（Cookie/token/refresh_token），加密入库。
+
+    适用于尚未实现扫码登录的平台（百度/UC/迅雷/微云等），凭据由用户
+    自行从浏览器/客户端获取后传入。凭据立即加密存储，不落明文。
+    """
+    settings = Settings.from_env()
+    engine, auth, service, cipher = _build(settings)
+    await init_db(engine)
+    if auth is None:
+        print("❌ 未配置 PANBRIDGE_SECRET_KEY，无法加密存储账号凭据。")
+        return 1
+    try:
+        encrypted = cipher.encrypt(credential)
+        account = await service.add_account(
+            provider, label or f"{provider}-manual", encrypted
+        )
+        print(
+            "✅ 凭据已安全导入并加密保存。\n"
+            f"   account_id = {account.id}\n"
+            f"   provider   = {account.provider}\n"
+            f"   label      = {account.label}"
+        )
         return 0
     finally:
         await engine.dispose()
@@ -137,8 +175,13 @@ def main(argv: list[str] | None = None) -> int:
     auth_parser = sub.add_parser("auth", help="账号认证管理")
     auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
 
-    login_p = auth_sub.add_parser("login", help="扫码登录")
+    login_p = auth_sub.add_parser("login", help="扫码登录（quark/aliyun/115）")
     login_p.add_argument("--provider", default="quark", help="网盘平台")
+
+    import_p = auth_sub.add_parser("import", help="手工导入凭据（加密入库）")
+    import_p.add_argument("--provider", required=True, help="网盘平台")
+    import_p.add_argument("--label", default="", help="账号标签（可选）")
+    import_p.add_argument("--credential", required=True, help="凭据（Cookie/token）")
 
     status_p = auth_sub.add_parser("status", help="查询登录状态")
     status_p.add_argument("--provider", default="quark", help="网盘平台")
@@ -150,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.auth_command == "login":
         return asyncio.run(_login(args.provider))
+    if args.auth_command == "import":
+        return asyncio.run(
+            _import(args.provider, args.label, args.credential)
+        )
     if args.auth_command == "status":
         return asyncio.run(_status(args.provider))
     if args.auth_command == "logout":

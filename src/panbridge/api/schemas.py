@@ -86,9 +86,14 @@ class QrLoginStartResponse(BaseModel):
 
 class QrLoginStatusResponse(BaseModel):
     session_id: str
-    status: str  # waiting | success | expired
+    status: str  # waiting | scanned | success | expired | cancelled | failed
     account_id: str | None = None
     account: AccountResponse | None = None
+
+
+class QrCancelResponse(BaseModel):
+    session_id: str
+    cancelled: bool
 
 
 class LoginStatusResponse(BaseModel):
