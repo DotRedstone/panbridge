@@ -70,7 +70,7 @@ async def _verify_provider(name: str, provider, share_id: str, password, tmpdir)
     downloader = HttpDownloader(timeout=30.0, max_size=5 * 1024 * 1024)
     dest = os.path.join(tmpdir, name or f"{name}.bin")
     try:
-        async for prog in downloader.download(
+        async for _prog in downloader.download(
             url, dest, headers=info.get("headers") or {}
         ):
             pass

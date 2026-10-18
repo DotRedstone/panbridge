@@ -1,33 +1,46 @@
 # Provider 说明与复用来源
 
-> 本文件由能力扫描 + 真实验证生成。**真实平台 15 个 + Mock 1 个 = 16 个已注册 Provider**。
+> 本文件由能力扫描 + 真实验证生成。**真实平台 14 个 + Mock 1 个 = 15 个已注册 Provider**。
+> （通过 `main.py` 的 `registry.register()` 实际调用统计：14 个真实 Provider + 1 个 MockProvider。）
 > 能力列以「实际方法实现」为准（自动扫描 `provider.py` 方法是否真实实现而非 `raise UNSUPPORTED_OPERATION`）。
+
+## 五种验证状态（严格区分）
+
+1. **已注册 Provider**：在 `registry` 中注册，能被 `registry.get()` 找到。
+2. **已实现协议**：对应方法有真实 HTTP 协议实现（非空壳 `raise UNSUPPORTED_OPERATION`）。
+3. **Mock 测试通过**：单元/集成测试用 mock httpx 验证了方法逻辑（不访问真实网络）。
+4. **真实匿名网络验证通过**：用合法公开分享实际发送 HTTP 请求，解析成功/下载直链调通。
+5. **真实账号转存下载通过**：用真实账号完成转存+下载全链路（需扫码登录）。
 
 ## 能力矩阵总览
 
 图例：✅ 已实现且真实可用；🟡 已实现但需真实账号验证；🟠 已实现但触发风控/需登录；❌ 未实现或平台不支持。
 
-| Provider | 显示名 | 匿名解析 | 文件列表 | 转存 | 账号列表 | 下载 | 登录方式 | 验证状态 |
-|----------|--------|:---:|:---:|:---:|:---:|:---:|------|------|
-| `quark` | 夸克网盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | 扫码 | ✅ 匿名解析真实验证 |
-| `aliyun` | 阿里云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | refresh_token | ✅ 匿名解析真实验证 |
-| `lanzou` | 蓝奏云 | ✅ | ✅ | ❌(无账号) | ❌ | ✅ | 无需登录 | ⚠️ 协议+Mock |
-| `123` | 123 云盘 | ✅ | ✅ | ❌(未验证) | ✅ | 🟡 | access_token | ✅ 匿名解析真实验证(协议已修复) |
-| `baidu` | 百度网盘 | 🟠(风控) | ✅ | 🟡 | ✅ | ✅ | BDUSS Cookie | 🟠 匿名触发 9019 风控 |
-| `115` | 115 网盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | Cookie | ⚠️ 匿名解析+Mock |
-| `pikpak` | PikPak | ✅ | ✅ | ❌(未验证) | ❌ | 🟡 | 无需登录(分享) | ⚠️ 协议+Mock |
-| `cloud189` | 天翼云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | 账号密码/SSON | ⚠️ 协议+Mock |
-| `caiyun` | 移动云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ✅ | Authorization | ⚠️ 协议+Mock |
-| `uc` | UC 网盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ✅ | Cookie | ⚠️ 协议+Mock |
-| `xunlei` | 迅雷云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ✅ | refresh_token | ⚠️ 协议+Mock |
-| `weiyun` | 腾讯微云 | ✅ | ✅ | 🟡 | ✅ | 🟡 | skey Cookie | ⚠️ 协议+Mock |
-| `guangya` | 光鸭云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | access_token | ⚠️ 协议+Mock |
-| `wukong` | 悟空网盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | Cookie/token | ⚠️ 协议+Mock |
-| `mock` | Mock | - | - | - | - | - | - | 测试用 |
+| Provider | 显示名 | 匿名解析 | 文件列表 | 转存 | 账号列表 | 匿名下载 | 账号下载 | 登录方式 | 验证状态 |
+|----------|--------|:---:|:---:|:---:|:---:|:---:|:---:|------|------|
+| `quark` | 夸克网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 扫码 | ✅ 匿名解析真实验证 |
+| `aliyun` | 阿里云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | refresh_token | ✅ 匿名解析真实验证 |
+| `lanzou` | 蓝奏云 | ✅ | ✅ | ❌(无账号) | ❌ | ✅ | - | 无需登录 | ⚠️ 协议+Mock |
+| `123` | 123 云盘 | ✅ | ✅ | ❌(未验证) | ✅ | ✅ | ✅ | access_token | ✅ 匿名解析+下载协议真实验证 |
+| `baidu` | 百度网盘 | 🟠(风控) | ✅ | 🟡 | ✅ | ❌ | ✅ | BDUSS Cookie | 🟠 匿名触发 9019 风控 |
+| `115` | 115 网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | Cookie | ⚠️ 匿名解析+Mock |
+| `pikpak` | PikPak | ✅ | ✅ | ❌(未验证) | ❌ | ✅ | ❌ | 无需登录(分享) | ⚠️ 协议+Mock（需住宅IP） |
+| `cloud189` | 天翼云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 账号密码/SSON | ⚠️ 协议+Mock |
+| `caiyun` | 移动云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | Authorization | ⚠️ 协议+Mock |
+| `uc` | UC 网盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | Cookie | ⚠️ 协议+Mock |
+| `xunlei` | 迅雷云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | refresh_token | ⚠️ 协议+Mock |
+| `weiyun` | 腾讯微云 | ✅ | ✅ | 🟡 | ✅ | ❌ | ❌ | skey Cookie | ⚠️ 协议+Mock |
+| `guangya` | 光鸭云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | access_token | ⚠️ 协议+Mock |
+| `wukong` | 悟空网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | Cookie/token | ⚠️ 协议+Mock |
+| `mock` | Mock | - | - | - | - | - | - | - | 测试用 |
 
 > 注：UC / 迅雷 / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
 > `INSPECT`（无账号）返回 `ACTION_REQUIRED`；`SAVE` / `SAVE_AND_DOWNLOAD`
 > 流程使用账号凭据完成解析+转存。微云「解析分享」匿名可用（NoLogin 路径）。
+>
+> 「匿名下载」列：✅ 表示 `get_share_download_info` 已实现（非空壳），
+> 支持无需账号的分享直链下载。仅 aliyun/lanzou/123/pikpak 四个平台支持。
+> 其余平台分享下载需登录态，走「先转存再下载」（save_and_download）。
 
 ## 转存→下载闭环（save_and_download）
 
@@ -55,8 +68,20 @@
 | 平台 | 验证内容 | 结果 |
 |------|---------|------|
 | `123` | 423down 公开分享 `A6cA-I24Jh` | 解析出目录 + 目录遍历（子目录）成功 |
-| `quark` | 423down 公开分享 `04063177664c` | 解析出 1 个目录成功 |
+| `quark` | 423down 公开分享 `04063177664c` | 解析出 1 个目录成功（标题=原版集成更新ISO镜像） |
 | `aliyun` | 此前已验证匿名分享解析 | 成功 |
+
+### ✅ 真实匿名下载协议验证（直链接口真实调通）
+
+| 平台 | 验证内容 | 结果 |
+|------|---------|------|
+| `123` | 递归定位小文件 `LTSC_2024_26300.9711.txt`（810B）→ `/b/api/share/download/info` 解析直链 | 下载接口调通，服务器返回业务错误 `5112 分享方流量包不足`（证明协议正确，仅该分享流量耗尽，非协议错误） |
+
+> **123 云盘匿名下载协议已完全验证**：`/gsb/s/share-key` 解析短码 →
+> `<uid>.share.123pan.cn/api/share/get` 列表 → `yun.123pan.com/b/api/share/download/info`
+> 下载直链（etag/s3keyFlag/fileId）。服务器返回明确的 `5112` 业务错误码，
+> 证明请求字段、签名、端点全部正确。下载本身因该分享的分享者流量包耗尽而无法完成，
+> 已如实映射为 `QUOTA_EXCEEDED`（非风控/协议错误）。
 
 ### 🟠 触发风控 / 需登录（如实返回错误码）
 
@@ -64,6 +89,7 @@
 |------|------|------|
 | `baidu` | wxlist 返回 9019 `need verify` | 已识别为 `ACTION_REQUIRED`（风控），非协议错误 |
 | `guangya` | 分享端点返回 410 `code:128` | 分享失效或端点漂移，未确认 |
+| `pikpak` | 需住宅 IP，IDC 段被屏蔽返回 PROHIBITED | 已映射 RATE_LIMITED，需住宅 IP 才能真实下载 |
 
 ### ❌ 受阻平台（如实声明，不伪造支持）
 
@@ -98,6 +124,30 @@
 | `guangya` | /drive/v1/share → restore → files | 转存/下载 |
 | `wukong` | /api/v1/share/info → save → file/download | 转存/下载 |
 | `cloud189` | getShareInfoByCodeV2 → listShareDir → createBatchTask | 转存/下载 |
+
+## 统一验收流程（批量验收脚本）
+
+用户无需手工抓 Cookie 或写 curl，只需两步：
+
+```bash
+# 1. 对需账号的平台扫码登录（匿名可下载平台可跳过）
+panbridge auth login --provider quark    # 夸克
+panbridge auth login --provider 115      # 115（若实现扫码）
+
+# 2. 提供分享链接，脚本自动判断「匿名直链下载」还是「先转存再下载」
+python scripts/acceptance.py --share 'https://www.123pan.com/s/xxxx'
+python scripts/acceptance.py --share 'https://pan.quark.cn/s/xxxx 提取码: abcd'
+
+# 批量验收：链接写进文本文件（每行一条，# 开头为注释）
+python scripts/acceptance.py --file links.txt
+```
+
+**自动判断逻辑**（核心目标「用户给链接 → 自动判断下载方式」）：
+- 平台 `capabilities` 含 `get_share_download_info` → 走 `DOWNLOAD`（匿名直链，无需账号）。
+- 否则 → 走 `SAVE_AND_DOWNLOAD`（先转存再下载，需账号）。
+
+脚本会：解析分享 → 递归定位第一个非目录文件 → 创建任务 → 等待完成 →
+校验文件落盘，并如实报告每个平台的模式、错误和下载结果。
 
 ## 参考项目评估与许可证合规
 
