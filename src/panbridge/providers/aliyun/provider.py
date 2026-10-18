@@ -327,7 +327,13 @@ class AliyunProvider(ShareProvider):
                     destination or "root",
                 )
                 new_id = getattr(resp, "file_id", None)
-                saved_file_ids.append(str(new_id) if new_id else fid)
+                if not new_id:
+                    # 平台未返回新 fid：如实记入 failed，不用源 fid 冒充。
+                    failed.append(
+                        {"file_id": fid, "error": "no file_id returned"}
+                    )
+                    continue
+                saved_file_ids.append(str(new_id))
             except Exception as exc:  # noqa: BLE001
                 failed.append({"file_id": fid, "error": str(exc)[:200]})
 

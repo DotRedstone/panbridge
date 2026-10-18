@@ -412,7 +412,21 @@ class Worker:
                 destination, on_conflict,
             )
 
-        # 不支持 create_folder：扁平转存，映射来自返回结果。
+        # 不支持 create_folder：无法重建子目录。若分享包含多级子目录文件，
+        # 扁平转存会导致同名文件冲突、目录结构丢失，此时必须显式声明限制，
+        # 不得静默扁平化后仍报告「保留目录结构成功」。
+        has_subdirs = any("/" in e.rel_path for e in entries)
+        if has_subdirs:
+            raise DomainError(
+                ErrorCode.UNSUPPORTED_OPERATION,
+                f"provider {provider.name} does not support preserving "
+                "directory structure during transfer; share contains "
+                "nested files, please transfer root-level files only or "
+                "use a provider with folder support",
+                retryable=False,
+            )
+
+        # 无子目录：扁平转存安全（无同名冲突），映射来自返回结果。
         fids = [e.source_fid for e in entries]
         transfer = await provider.save_shared_files(
             account, share_id, password, fids, destination, on_conflict

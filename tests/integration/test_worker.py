@@ -645,3 +645,53 @@ async def test_transfer_count_mismatch_fails_not_forged(tmp_path):
 
     await worker.stop()
     await engine.dispose()
+
+
+class _NoFolderProvider(MockProvider):
+    """不支持 create_folder 的 Provider（模拟阿里云盘等扁平转存平台）。"""
+
+    capabilities = MockProvider.capabilities - {"create_folder"}
+
+
+@pytest.mark.asyncio
+async def test_flat_transfer_with_subdirs_fails_explicitly(tmp_path):
+    """不支持 create_folder 的平台转存含子目录文件时，应显式报错而非静默扁平化。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    provider = _NoFolderProvider()
+    registry = ProviderRegistry()
+    registry.register(provider)
+
+    downloader = _FakeDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    async with session_scope(sessionmaker) as session:
+        await AccountRepository(session).add(
+            Account(id="acc1", provider="mock", label="t")
+        )
+
+    # mock001 分享含子目录文件（folder/d1 等）
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.SAVE,
+            account_id="acc1",
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    # 显式声明限制：报 UNSUPPORTED_OPERATION，而非静默扁平化后报告成功
+    assert result.status == TaskStatus.FAILED
+    assert result.error_code == "UNSUPPORTED_OPERATION"
+
+    await worker.stop()
+    await engine.dispose()

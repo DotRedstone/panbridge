@@ -280,8 +280,11 @@ class WukongProvider(ShareProvider):
         saved = (
             result.get("file_ids")
             or result.get("data", {}).get("file_ids")
-            or file_ids
         )
+        if not saved:
+            # 平台未返回真实新 fid：不伪造（禁止用源 fid 冒充），
+            # 返回空映射交由 Worker 走 resolve 兜底或如实报错。
+            return TransferResult(saved_file_ids=[])
         return TransferResult(saved_file_ids=[str(i) for i in saved])
 
     async def create_folder(
