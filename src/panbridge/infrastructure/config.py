@@ -61,6 +61,9 @@ class Settings:
             max_download_bytes=int(
                 os.environ.get("PANBRIDGE_MAX_DOWNLOAD_BYTES", "0")
             ),
+            allow_insecure_download=(
+                os.environ.get("PANBRIDGE_ALLOW_INSECURE_DOWNLOAD", "") == "1"
+            ),
         )
 
 

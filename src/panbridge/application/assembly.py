@@ -95,6 +95,7 @@ def build_downloader(settings: Settings) -> HttpDownloader:
     return HttpDownloader(
         rate_limit=settings.download_rate_limit or None,
         max_size=settings.max_download_bytes or None,
+        allow_loopback=settings.allow_insecure_download,
     )
 
 
