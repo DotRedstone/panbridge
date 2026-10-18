@@ -24,6 +24,9 @@ class Settings:
     allow_insecure_download: bool = False
     # 下载限速（字节/秒），0 或负数表示不限速
     download_rate_limit: int = 0
+    # 单文件下载量上限（字节），0 表示不限。由下载器硬性拦截，防止
+    # 意外下载超大文件（配合验收脚本的 --max-download-bytes 使用）。
+    max_download_bytes: int = 0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -54,6 +57,9 @@ class Settings:
             ),
             download_rate_limit=int(
                 os.environ.get("PANBRIDGE_DOWNLOAD_RATE_LIMIT", "0")
+            ),
+            max_download_bytes=int(
+                os.environ.get("PANBRIDGE_MAX_DOWNLOAD_BYTES", "0")
             ),
         )
 

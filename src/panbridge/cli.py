@@ -14,8 +14,10 @@ import argparse
 import asyncio
 import logging
 
-from panbridge.application.auth import QuarkQrAuthService
-from panbridge.application.auth_service import AuthService
+from panbridge.application.assembly import (
+    build_auth_service,
+    build_registry,
+)
 from panbridge.application.service import ApplicationService
 from panbridge.infrastructure.config import Settings
 from panbridge.infrastructure.crypto import CredentialCipher
@@ -24,8 +26,6 @@ from panbridge.persistence import (
     create_sessionmaker,
     init_db,
 )
-from panbridge.providers.quark.provider import QuarkProvider
-from panbridge.providers.registry import ProviderRegistry
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -50,11 +50,9 @@ def _build(settings: Settings):
     engine = create_engine(settings.database_url)
     sessionmaker = create_sessionmaker(engine)
     cipher = CredentialCipher(settings.secret_key)
-    registry = ProviderRegistry()
-    registry.register(QuarkProvider(cipher=cipher))
+    registry = build_registry(cipher)
     service = ApplicationService(registry, sessionmaker)
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher)
-    auth = AuthService(service, registry, qr_auth)
+    auth = build_auth_service(service, registry, sessionmaker, cipher)
     return engine, auth
 
 

@@ -40,6 +40,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
+from panbridge.application.assembly import build_registry
 from panbridge.application.link_extraction import extract_share
 from panbridge.application.service import ApplicationService, CreateTaskInput
 from panbridge.domain.enums import Action, TaskStatus
@@ -52,45 +53,9 @@ from panbridge.persistence import (
     init_db,
     session_scope,
 )
-from panbridge.providers.registry import ProviderRegistry
 from panbridge.workers.worker import Worker
 
 _DEFAULT_MAX_BYTES = 50 * 1024 * 1024  # 完整目录验证默认最多下载 50MB
-
-
-def build_full_registry(cipher: CredentialCipher | None) -> ProviderRegistry:
-    """构建包含全部真实 Provider 的注册表（与 main.build_app 一致）。"""
-    from panbridge.providers.aliyun.provider import AliyunProvider
-    from panbridge.providers.baidu.provider import BaiduProvider
-    from panbridge.providers.caiyun.provider import CaiyunProvider
-    from panbridge.providers.cloud189.provider import Cloud189Provider
-    from panbridge.providers.guangya.provider import GuangyaProvider
-    from panbridge.providers.lanzou.provider import LanzouProvider
-    from panbridge.providers.pan115.provider import Pan115Provider
-    from panbridge.providers.pan123.provider import Pan123Provider
-    from panbridge.providers.pikpak.provider import PikPakProvider
-    from panbridge.providers.quark.provider import QuarkProvider
-    from panbridge.providers.uc.provider import UcProvider
-    from panbridge.providers.weiyun.provider import WeiyunProvider
-    from panbridge.providers.wukong.provider import WukongProvider
-    from panbridge.providers.xunlei.provider import XunleiProvider
-
-    registry = ProviderRegistry()
-    registry.register(QuarkProvider(cipher=cipher))
-    registry.register(AliyunProvider(cipher=cipher))
-    registry.register(LanzouProvider())
-    registry.register(Pan123Provider(cipher=cipher))
-    registry.register(BaiduProvider(cipher=cipher))
-    registry.register(Pan115Provider(cipher=cipher))
-    registry.register(PikPakProvider())
-    registry.register(Cloud189Provider(cipher=cipher))
-    registry.register(CaiyunProvider(cipher=cipher))
-    registry.register(UcProvider(cipher=cipher))
-    registry.register(XunleiProvider(cipher=cipher))
-    registry.register(WeiyunProvider(cipher=cipher))
-    registry.register(GuangyaProvider(cipher=cipher))
-    registry.register(WukongProvider(cipher=cipher))
-    return registry
 
 
 async def _get_account(service, sessionmaker, provider: str):
@@ -285,7 +250,7 @@ async def main() -> None:
     await init_db(engine)
     sessionmaker = create_sessionmaker(engine)
     cipher = CredentialCipher(settings.secret_key) if settings.secret_key else None
-    registry = build_full_registry(cipher)
+    registry = build_registry(cipher)
 
     download_dir = args.download_dir or tempfile.mkdtemp(prefix="panbridge-accept-")
     downloader = HttpDownloader(timeout=60, max_size=10 * 1024 * 1024)

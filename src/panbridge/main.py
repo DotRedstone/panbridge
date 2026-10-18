@@ -2,6 +2,9 @@
 
 只负责组装：创建配置、数据库、注册 Provider、下载器、应用服务，
 并暴露 FastAPI app 与 Worker。业务逻辑不在本文件堆积。
+
+Provider 注册、认证服务、下载器的统一装配见 application/assembly.py，
+CLI 与验收脚本复用同一套装配，避免重复注册与配置漂移。
 """
 
 from __future__ import annotations
@@ -12,11 +15,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from panbridge.api.router import build_router
-from panbridge.application.auth import QuarkQrAuthService
-from panbridge.application.auth_service import AuthService
+from panbridge.application.assembly import (
+    build_auth_service,
+    build_downloader,
+    build_registry,
+)
 from panbridge.application.service import ApplicationService
 from panbridge.domain.errors import DomainError
-from panbridge.downloads.http import HttpDownloader
 from panbridge.infrastructure.config import Settings
 from panbridge.infrastructure.crypto import CredentialCipher
 from panbridge.persistence import (
@@ -24,22 +29,6 @@ from panbridge.persistence import (
     create_sessionmaker,
     init_db,
 )
-from panbridge.providers.aliyun.provider import AliyunProvider
-from panbridge.providers.baidu.provider import BaiduProvider
-from panbridge.providers.caiyun.provider import CaiyunProvider
-from panbridge.providers.cloud189.provider import Cloud189Provider
-from panbridge.providers.guangya.provider import GuangyaProvider
-from panbridge.providers.lanzou.provider import LanzouProvider
-from panbridge.providers.pan115.provider import Pan115Provider
-from panbridge.providers.pan123.provider import Pan123Provider
-from panbridge.providers.pikpak.provider import PikPakProvider
-from panbridge.providers.quark.mock import MockProvider
-from panbridge.providers.quark.provider import QuarkProvider
-from panbridge.providers.registry import ProviderRegistry
-from panbridge.providers.uc.provider import UcProvider
-from panbridge.providers.weiyun.provider import WeiyunProvider
-from panbridge.providers.wukong.provider import WukongProvider
-from panbridge.providers.xunlei.provider import XunleiProvider
 from panbridge.workers.worker import Worker
 
 logging.basicConfig(
@@ -54,48 +43,12 @@ def build_app(settings: Settings | None = None) -> tuple[FastAPI, Worker]:
     engine = create_engine(settings.database_url)
     sessionmaker = create_sessionmaker(engine)
 
-    registry = ProviderRegistry()
-    registry.register(MockProvider())
-    # 真实夸克 Provider 需要解密器解密账号 Cookie
-    # secret_key 已由 Settings.from_env 自动生成/加载，无需手工填写。
+    # 主密钥已由 Settings.from_env 自动生成/加载，无需手工填写。
     cipher = CredentialCipher(settings.secret_key) if settings.secret_key else None
-    registry.register(QuarkProvider(cipher=cipher))
-    # 阿里云盘：分享解析/直链下载无需登录，仅转存需要 refresh_token
-    registry.register(AliyunProvider(cipher=cipher))
-    # 蓝奏云：匿名解析 + 直链下载，无需账号
-    registry.register(LanzouProvider())
-    # 123 云盘：匿名分享解析 + 直链下载，转存需账号
-    registry.register(Pan123Provider(cipher=cipher))
-    # 百度网盘：匿名解析分享列表，直链下载需 Cookie
-    registry.register(BaiduProvider(cipher=cipher))
-    # 115 网盘：匿名解析分享，转存/下载需 Cookie
-    registry.register(Pan115Provider(cipher=cipher))
-    # PikPak：匿名解析分享 + 直链下载，转存需账号
-    registry.register(PikPakProvider())
-    # 天翼云盘：账号文件列表 + 下载，分享解析需登录（未验证）
-    registry.register(Cloud189Provider(cipher=cipher))
-    # 中国移动云盘：分享解析/转存/账号列表，需 Authorization
-    registry.register(CaiyunProvider(cipher=cipher))
-    # UC 网盘：分享解析/转存/账号列表，需 Cookie
-    registry.register(UcProvider(cipher=cipher))
-    # 迅雷云盘：分享解析/转存/账号列表，需 refresh_token
-    registry.register(XunleiProvider(cipher=cipher))
-    # 腾讯微云：匿名解析分享，转存/下载需 skey Cookie
-    registry.register(WeiyunProvider(cipher=cipher))
-    # 光鸭云盘：匿名解析分享，转存/账号列表/下载需 access_token
-    registry.register(GuangyaProvider(cipher=cipher))
-    # 悟空网盘：匿名解析分享，转存/账号列表/下载需 Cookie 或 token
-    registry.register(WukongProvider(cipher=cipher))
-
-    downloader = HttpDownloader(
-        rate_limit=settings.download_rate_limit or None
-    )
-
+    registry = build_registry(cipher)
+    downloader = build_downloader(settings)
     service = ApplicationService(registry, sessionmaker, downloader=downloader)
-
-    # 扫码登录认证（复用 QuarkPan 协议，隔离副作用）
-    qr_auth = QuarkQrAuthService(sessionmaker, cipher) if cipher else None
-    auth_service = AuthService(service, registry, qr_auth) if qr_auth else None
+    auth_service = build_auth_service(service, registry, sessionmaker, cipher)
 
     worker = Worker(
         registry,
