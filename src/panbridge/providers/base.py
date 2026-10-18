@@ -80,6 +80,30 @@ class ShareProvider(ABC):
             f"provider {self.name} does not support direct download",
         )
 
+    async def get_share_download_info(
+        self, share_id: str, password: str | None, file_id: str
+    ) -> dict[str, Any]:
+        """解析分享中单个文件的下载信息（匿名，无需登录）。
+
+        与 `get_download_info` 的区别：后者下载「账号网盘中的文件」
+        （需要真实 fid 与登录态），本方法下载「分享中的文件」，
+        依赖分享上下文（share_id/password 及 Provider 内部解析出的
+        token/pass_token/etag/s3keyFlag 等）。
+
+        返回字典应包含 `url`（必填）与可选 `name`/`size`/`checksum`/
+        `headers`。默认抛 UNSUPPORTED_OPERATION —— 表示该平台不支持
+        匿名分享直链下载（需先转存再下载）。
+
+        实现注意：Provider 实例是无状态的，本方法应在需要时重新解析
+        分享上下文（token 等），不得依赖跨方法调用的实例状态。
+        """
+        from panbridge.domain.errors import DomainError, ErrorCode
+
+        raise DomainError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            f"provider {self.name} does not support anonymous share download",
+        )
+
     async def resolve_saved_file_ids(
         self, account: Account, destination: str | None, names: list[str]
     ) -> list[str]:

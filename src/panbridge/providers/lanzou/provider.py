@@ -85,6 +85,7 @@ class LanzouProvider(ShareProvider):
             "inspect_share",
             "list_share_files",
             "get_download_info",
+            "get_share_download_info",
         }
     )
 
@@ -190,6 +191,27 @@ class LanzouProvider(ShareProvider):
             ErrorCode.UNSUPPORTED_OPERATION,
             "lanzou does not support account file listing (no account system)",
         )
+
+    async def get_share_download_info(
+        self, share_id: str, password: str | None, file_id: str
+    ) -> dict[str, Any]:
+        """解析蓝奏云分享单文件直链（匿名）。
+
+        share_id 为完整分享 URL，file_id 为 inspect 时得到的直链或文件 key。
+        重新解析分享页以获得真实文件名与最新直链。
+        """
+        # 蓝奏云分享页仅单文件，file_id 与 share_id 指向同一资源。
+        info = await self._fetch_file_info(share_id, password)
+        return {
+            "url": info["direct_url"],
+            "name": info["name"],
+            "size": None,
+            "checksum": None,
+            "headers": {
+                "User-Agent": _HEADERS["User-Agent"],
+                "Referer": "https://www.lanzou.com/",
+            },
+        }
 
     async def get_download_info(
         self, account: Account, file_id: str

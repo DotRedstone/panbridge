@@ -102,6 +102,7 @@ class Pan123Provider(ShareProvider):
             "inspect_share",
             "list_share_files",
             "get_download_info",
+            "get_share_download_info",
             "save_shared_files",
             "list_account_files",
             "validate_account",
@@ -147,6 +148,13 @@ class Pan123Provider(ShareProvider):
             parent_id=str(
                 raw.get("ParentFileId", raw.get("parentFileId", ""))
             ),
+            # 下载直链所需的字段（etag/s3keyFlag），匿名下载时使用。
+            raw={
+                "etag": raw.get("Etag", raw.get("etag")),
+                "s3keyFlag": raw.get("S3KeyFlag", raw.get("s3keyFlag")),
+                "size": raw.get("Size", raw.get("size")),
+                "fileId": str(raw.get("FileId", raw.get("fileId", ""))),
+            },
         )
 
     @staticmethod
@@ -338,29 +346,86 @@ class Pan123Provider(ShareProvider):
         items = data.get("data", {}).get("InfoList", [])
         return [self._map_share_item(it) for it in items]
 
+    async def get_share_download_info(
+        self, share_id: str, password: str | None, file_id: str
+    ) -> dict[str, Any]:
+        """解析分享中单个文件的直链（匿名，无需登录）。
+
+        流程：重新解析分享短码 → 个性化域名文件列表 → 找到目标文件
+        （含 etag/s3keyFlag）→ POST /api/share/download/info 拿直链。
+        file_id 为目标文件的 FileId（由 inspect_share 的 files 提供）。
+        """
+        full_key = share_id
+        if password and "-" not in share_id:
+            full_key = f"{share_id}-{password}"
+
+        files = await self._get_share_files(full_key, password)
+        target = next(
+            (f for f in files if f.file_id == str(file_id)), None
+        )
+        if target is None:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                f"123 share file not found: {file_id}",
+                retryable=False,
+            )
+        if target.is_dir:
+            raise DomainError(
+                ErrorCode.UNSUPPORTED_OPERATION,
+                "123 share directory download is not supported",
+            )
+
+        url = await self.resolve_share_download_url(
+            full_key, password, target.raw
+        )
+        return {
+            "url": url,
+            "name": target.name,
+            "size": target.size,
+            "checksum": None,
+            "headers": {"referer": "https://www.123pan.cn/"},
+        }
+
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
-        """获取分享文件直链（匿名）。
+        """获取账号网盘文件的下载直链（需登录）。
 
-        由于分享文件的直链需要 etag/s3keyFlag/size 等字段，而这些字段
-        在 list_share_files 时未完整保留到 ShareFile，这里通过重新解析
-        分享来获取。`file_id` 若为纯 fid 无法直接下载，需完整文件信息。
+        与匿名分享下载（get_share_download_info）分离：此处 file_id
+        为账号网盘中的真实 fid，需 access_token。
         """
-        # file_id 在这里应为「完整直链 URL」或需配合 raw 信息。
-        # 实际下载链路：inspect_share 时已拿到直链，直接返回。
-        if file_id.startswith("http"):
-            return {
-                "url": file_id,
-                "name": "",
-                "size": None,
-                "checksum": None,
-                "headers": {"referer": "https://yun.123pan.com/"},
-            }
-        raise DomainError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            "123 share download requires resolved direct link (use inspect first)",
-        )
+        token = self._decrypt_credential(account)
+        body = {"driveId": 0, "etag": "", "fileId": int(file_id), "s3keyFlag": ""}
+        url = _signed_url(_BApi + "/file/download_info")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                url,
+                json=body,
+                headers={**_HEADERS, "authorization": f"Bearer {token}"},
+            )
+        if resp.status_code != 200:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                f"123 download info returned {resp.status_code}",
+                retryable=True,
+            )
+        data = resp.json()
+        if data.get("code") not in (0, 200):
+            raise self._map_error(data)
+        download_url = (data.get("data") or {}).get("DownloadURL", "")
+        if not download_url:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "123 returned empty account download url",
+                retryable=True,
+            )
+        return {
+            "url": download_url,
+            "name": None,
+            "size": None,
+            "checksum": None,
+            "headers": {"authorization": f"Bearer {token}"},
+        }
 
     async def resolve_share_download_url(
         self, share_key: str, password: str | None, file_info: dict[str, Any]

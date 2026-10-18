@@ -189,3 +189,68 @@ async def test_save_shared_files_unverified():
     with pytest.raises(DomainError) as exc:
         await p.save_shared_files(None, "x", None, [], None, "skip")
     assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION
+
+
+@pytest.mark.asyncio
+async def test_get_share_download_info_anonymous(monkeypatch):
+    """匿名分享下载：解析列表 + 直链，返回 url 与文件名。"""
+    import base64
+
+    real_url = "https://download.cdn.example.com/a.zip"
+    encoded = base64.b64encode(real_url.encode()).decode()
+    routes = {
+        "/gsb/s/share-key": _FakeResponse(
+            200, {"info": {"code": 0, "data": {"UserID": 1625770}}}
+        ),
+        "/api/share/get": _FakeResponse(
+            200,
+            {
+                "code": 0,
+                "data": {
+                    "InfoList": [
+                        {
+                            "FileId": 1001,
+                            "FileName": "a.zip",
+                            "Type": 0,
+                            "Size": 2048,
+                            "Etag": "e1",
+                            "S3KeyFlag": "f1",
+                        }
+                    ]
+                },
+            },
+        ),
+        "/api/share/download/info": _FakeResponse(
+            200,
+            {
+                "code": 0,
+                "data": {
+                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                },
+            },
+        ),
+    }
+    _install(monkeypatch, routes)
+    p = Pan123Provider(cipher=None)
+    info = await p.get_share_download_info("abc123", None, "1001")
+    assert info["url"] == real_url
+    assert info["name"] == "a.zip"
+    assert info["size"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_get_share_download_info_missing_file(monkeypatch):
+    """目标文件不在分享列表时，如实报下载失败。"""
+    routes = {
+        "/gsb/s/share-key": _FakeResponse(
+            200, {"info": {"code": 0, "data": {"UserID": 1625770}}}
+        ),
+        "/api/share/get": _FakeResponse(
+            200, {"code": 0, "data": {"InfoList": []}}
+        ),
+    }
+    _install(monkeypatch, routes)
+    p = Pan123Provider(cipher=None)
+    with pytest.raises(DomainError) as exc:
+        await p.get_share_download_info("abc123", None, "999")
+    assert exc.value.code == ErrorCode.DOWNLOAD_FAILED

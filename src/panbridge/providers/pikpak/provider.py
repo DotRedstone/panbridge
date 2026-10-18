@@ -96,6 +96,7 @@ class PikPakProvider(ShareProvider):
             "inspect_share",
             "list_share_files",
             "get_download_info",
+            "get_share_download_info",
         }
     )
 
@@ -282,21 +283,32 @@ class PikPakProvider(ShareProvider):
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
-        # file_id 应为「分享解析后的直链」，匿名场景直接返回。
-        # 若需从 share 解析 file_info，需 share_id/pass_token，此处
-        # 支持传入完整直链 URL 的场景。
-        if file_id.startswith("http"):
-            return {
-                "url": file_id,
-                "name": "",
-                "size": None,
-                "checksum": None,
-                "headers": {},
-            }
+        # PikPak 账号文件下载需要登录态 access_token，未验证，如实拒绝。
         raise DomainError(
             ErrorCode.UNSUPPORTED_OPERATION,
-            "pikpak share download requires resolved direct link",
+            "pikpak account download requires login (not yet verified)",
         )
+
+    async def get_share_download_info(
+        self, share_id: str, password: str | None, file_id: str
+    ) -> dict[str, Any]:
+        """解析分享中单个文件的直链（匿名，无需登录）。
+
+        重新解析 captcha/pass_token，然后通过 file_info 接口拿到
+        web_content_link。file_id 为分享文件的 id（inspect 提供）。
+        """
+        captcha = await self._get_captcha_token("GET:/drive/v1/share")
+        pass_token = await self._get_pass_code_token(share_id, password, captcha)
+        link = await self.resolve_file_download_url(
+            share_id, file_id, pass_token, captcha
+        )
+        return {
+            "url": link,
+            "name": None,
+            "size": None,
+            "checksum": None,
+            "headers": {"User-Agent": _HEADERS["User-Agent"]},
+        }
 
     async def resolve_file_download_url(
         self, share_id: str, file_id: str, pass_token: str, captcha: str

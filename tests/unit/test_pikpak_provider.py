@@ -155,3 +155,32 @@ async def test_save_shared_files_unverified():
     with pytest.raises(DomainError) as exc:
         await p.save_shared_files(None, "x", None, [], None, "skip")
     assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION
+
+
+@pytest.mark.asyncio
+async def test_get_share_download_info_anonymous(monkeypatch):
+    """匿名分享下载：重新解析 captcha/pass_token 后拿直链。"""
+    routes = {
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/share": _FakeResponse(
+            200, {"share_status": "OK", "pass_code_token": "pt"}
+        ),
+        "/drive/v1/share/file_info": _FakeResponse(
+            200,
+            {"file_info": {"web_content_link": "https://cdn.pikpak.com/x.mkv"}},
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+
+    p = PikPakProvider()
+    info = await p.get_share_download_info("share123", None, "f1")
+    assert info["url"] == "https://cdn.pikpak.com/x.mkv"
+
+
+@pytest.mark.asyncio
+async def test_get_download_info_requires_login():
+    """账号下载未验证，如实拒绝。"""
+    p = PikPakProvider()
+    with pytest.raises(DomainError) as exc:
+        await p.get_download_info(None, "f1")
+    assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION

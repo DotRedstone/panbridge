@@ -196,16 +196,16 @@ class Worker:
                     ErrorCode.UNSUPPORTED_OPERATION,
                     "download backend not configured",
                 )
-            account = account or await self._get_account(task.account_id)
             await self._set_status(task.id, TaskStatus.DOWNLOADING)
 
-            # 下载源文件 ID：纯 download 用源分享的 fid；
-            # save_and_download 需用转存后的新 fid（若平台返回空则查询）。
-            download_file_ids = selected
+            # 下载源文件 ID 与下载模式：
+            # - SAVE_AND_DOWNLOAD：转存后从账号网盘下载（需 account + 新 fid）。
+            # - DOWNLOAD：优先匿名分享直链下载（无需账号）；若平台不支持
+            #   匿名下载且提供了 account，则回退到账号下载。
             if task.action == Action.SAVE_AND_DOWNLOAD:
-                if saved_file_ids:
-                    download_file_ids = saved_file_ids
-                else:
+                account = account or await self._get_account(task.account_id)
+                download_file_ids = saved_file_ids
+                if not download_file_ids:
                     names = [name_by_fid.get(f, f) for f in selected]
                     resolved = await provider.resolve_saved_file_ids(
                         account, destination, names
@@ -217,14 +217,25 @@ class Worker:
                             retryable=False,
                         )
                     download_file_ids = resolved
+                downloaded = await self._download_account_files(
+                    provider,
+                    account,
+                    download_file_ids,
+                    name_by_fid,
+                    task.on_conflict.value,
+                )
+            else:
+                # 纯 DOWNLOAD：匿名分享下载（有 account 也优先匿名直链，
+                # 因为分享直链通常比账号下载更简单且无需转存）。
+                downloaded = await self._download_share_files(
+                    provider,
+                    extracted.share_id,
+                    extracted.password,
+                    selected,
+                    name_by_fid,
+                    task.on_conflict.value,
+                )
 
-            downloaded = await self._download_files(
-                provider,
-                account,
-                download_file_ids,
-                name_by_fid,
-                task.on_conflict.value,
-            )
             return {
                 "downloaded": downloaded,
                 "files": [
@@ -276,6 +287,61 @@ class Worker:
             size = _local_file_size(dest)
             results.append({"name": name, "path": dest, "size": size})
         return results
+
+    async def _download_share_files(
+        self,
+        provider,
+        share_id: str,
+        password: str | None,
+        file_ids: list[str],
+        name_by_fid: dict,
+        on_conflict: str,
+    ) -> list[dict]:
+        """匿名分享直链下载（无需账号）。
+
+        对每个选中文件调用 `get_share_download_info` 解析直链并下载。
+        平台不支持匿名分享下载时抛 UNSUPPORTED_OPERATION（由上层捕获
+        后提示需先转存或登录）。
+        """
+        results: list[dict] = []
+        for fid in file_ids:
+            info = await provider.get_share_download_info(
+                share_id, password, fid
+            )
+            url = info["url"]
+            # 文件名优先级：接口返回的 name > inspect 时记录的 name。
+            name = (
+                info.get("name")
+                or name_by_fid.get(fid)
+                or f"{fid}.bin"
+            )
+            dest = self._resolve_local_path(name, on_conflict)
+            headers = info.get("headers") or {}
+            expected_size = info.get("size")
+            async for _progress in self.downloader.download(
+                url, dest, headers=headers, expected_size=expected_size
+            ):
+                pass
+            size = _local_file_size(dest)
+            results.append({"name": name, "path": dest, "size": size})
+        return results
+
+    async def _download_account_files(
+        self,
+        provider,
+        account,
+        file_ids: list[str],
+        name_by_fid: dict,
+        on_conflict: str,
+    ) -> list[dict]:
+        """账号网盘文件下载（转存后）。
+
+        通过 `get_download_info` 拿账号文件直链并下载。
+        文件名优先用 `resolve` 前的源文件名映射。
+        """
+        return await self._download_files(
+            provider, account, file_ids, name_by_fid, on_conflict
+        )
 
     def _resolve_local_path(self, name: str, on_conflict: str) -> str:
         """根据冲突策略确定本地下载路径。

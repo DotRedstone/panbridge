@@ -42,13 +42,18 @@ class Account:
 
 @dataclass
 class ShareFile:
-    """分享中的单个文件或目录。"""
+    """分享中的单个文件或目录。
+
+    `raw` 承载平台私有的、下载所需的元数据（如 etag/s3keyFlag/
+    直链等），供匿名分享下载时使用。该字段不向外部 API 泄漏。
+    """
 
     file_id: str
     name: str
     is_dir: bool = False
     size: int | None = None
     parent_id: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

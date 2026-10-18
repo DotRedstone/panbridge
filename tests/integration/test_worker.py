@@ -98,6 +98,62 @@ async def test_full_save_lifecycle(env):
     assert result.status == TaskStatus.COMPLETED
 
 
+class _AnonDownloadProvider(MockProvider):
+    """模拟支持匿名分享直链下载的平台（如蓝奏云/123/PikPak）。
+
+    get_share_download_info 返回直链与文件名，无需账号即可下载。
+    """
+
+    async def get_share_download_info(self, share_id, password, file_id):
+        return {
+            "url": f"https://download.mock.local/{file_id}",
+            "name": f"{file_id}.bin",
+            "size": 1024,
+            "checksum": None,
+            "headers": {},
+        }
+
+
+@pytest.mark.asyncio
+async def test_anonymous_download_lifecycle(tmp_path):
+    """匿名下载：无账号也能通过 get_share_download_info 落盘文件。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    registry = ProviderRegistry()
+    registry.register(_AnonDownloadProvider())
+
+    downloader = _FakeDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    # 不指定 account_id：纯匿名下载
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.DOWNLOAD,
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    assert result.status == TaskStatus.COMPLETED
+    # 转存了 2 个非目录文件（mock 的 f1/f2）
+    assert len(downloader.calls) == 2
+    # 文件名应来自 get_share_download_info，而非 fid 裸名
+    names = [f["name"] for f in result.result["files"]]
+    assert "mock001-f1.bin" in names
+
+    await worker.stop()
+    await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_expired_account_fails(env):
     service, worker, sessionmaker = env

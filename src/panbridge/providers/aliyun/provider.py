@@ -71,6 +71,7 @@ class AliyunProvider(ShareProvider):
             "save_shared_files",
             "list_account_files",
             "get_download_info",
+            "get_share_download_info",
             "validate_account",
         }
     )
@@ -371,4 +372,42 @@ class AliyunProvider(ShareProvider):
             "size": getattr(resp, "size", None),
             "checksum": getattr(resp, "crc64_hash", None),
             "headers": {},
+        }
+
+    async def get_share_download_info(
+        self, share_id: str, password: str | None, file_id: str
+    ) -> dict[str, Any]:
+        """解析分享中单个文件的直链（匿名，无需登录）。
+
+        通过 share_token + get_share_link_download_url 拿匿名直链。
+        file_id 为分享文件的 file_id（inspect 提供）。
+        """
+        token = await self._get_share_token(share_id, password)
+        payload = {
+            "share_id": share_id,
+            "file_id": file_id,
+            "share_token": token,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                _API_HOST + "/v2/file/get_share_link_download_url",
+                headers={**_HEADERS, "x-share-token": token},
+                json=payload,
+            )
+        if resp.status_code != 200:
+            raise self._map_status(resp)
+        data = resp.json()
+        url = data.get("download_url") or data.get("url")
+        if not url:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "aliyun returned empty share download url",
+                retryable=True,
+            )
+        return {
+            "url": url,
+            "name": None,
+            "size": data.get("size"),
+            "checksum": None,
+            "headers": {"Referer": "https://aliyundrive.com"},
         }
