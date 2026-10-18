@@ -305,6 +305,66 @@ def test_local_conflict_rename(tmp_path):
     assert worker._resolve_local_path(name, "overwrite") == str(existing)
 
 
+class _IncompleteResolveProvider(MockProvider):
+    """模拟转存异步、resolve 返回数量不足的平台（应如实报错，不伪造成功）。"""
+
+    async def save_shared_files(
+        self, account, share_id, password, file_ids, destination, on_conflict
+    ):
+        # 转存返回空 saved_file_ids（异步任务，需 resolve 兜底）
+        from panbridge.domain.models import TransferResult
+
+        return TransferResult(saved_file_ids=[], remote_task_id="mock-task")
+
+    async def resolve_saved_file_ids(self, account, destination, names):
+        # 只返回 1 个新 fid，但应有 2 个文件 → 数量不足
+        return ["new-fid-1"]
+
+
+@pytest.mark.asyncio
+async def test_save_and_download_incomplete_resolve_fails(tmp_path):
+    """转存后 resolve 返回的新 fid 数量不足时，应如实报错而非伪造成功。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    registry = ProviderRegistry()
+    registry.register(_IncompleteResolveProvider())
+
+    downloader = _FakeDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    async with session_scope(sessionmaker) as session:
+        from panbridge.domain.models import Account
+
+        await AccountRepository(session).add(
+            Account(id="acc1", provider="mock", label="t")
+        )
+
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.SAVE_AND_DOWNLOAD,
+            account_id="acc1",
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    # resolve 数量不足 → 任务失败，而非伪装成功
+    assert result.status == TaskStatus.FAILED
+    assert result.error_code == "DOWNLOAD_FAILED"
+
+    await worker.stop()
+    await engine.dispose()
+
+
 class _RecordingDownloader:
     """记录下载的 destination 路径，模拟真实落盘。"""
 
