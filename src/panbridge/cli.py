@@ -6,7 +6,9 @@
     panbridge auth login --provider quark    # 终端显示二维码，夸克 App 扫码
     panbridge auth login --provider aliyun   # 阿里云盘 App 扫码
     panbridge auth login --provider 115      # 115 App 扫码
-    panbridge auth import --provider baidu --credential "BDUSS=..."  # 手工导入
+    # 手工导入凭据（安全：不经过命令行参数，交互式无回显输入）
+    panbridge auth import --provider baidu            # 提示后无回显输入
+    panbridge auth import --provider baidu --label work
     panbridge auth status                    # 查询当前登录状态
     panbridge auth logout                    # 退出登录（删除本地账号）
 """
@@ -15,7 +17,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import logging
+import os
+import sys
 
 from panbridge.application.assembly import (
     build_auth_service,
@@ -137,11 +142,18 @@ async def _logout(provider: str) -> int:
         await engine.dispose()
 
 
-async def _import(provider: str, label: str, credential: str) -> int:
+async def _import(provider: str, label: str, credential: str | None) -> int:
     """安全导入手工凭据（Cookie/token/refresh_token），加密入库。
 
     适用于尚未实现扫码登录的平台（百度/UC/迅雷/微云等），凭据由用户
-    自行从浏览器/客户端获取后传入。凭据立即加密存储，不落明文。
+    自行从浏览器/客户端获取后提供。凭据立即加密存储，不落明文。
+
+    安全约束（凭据绝不进入命令行参数/进程列表/Shell 历史）：
+    - 默认从 TTY 无回显交互输入（getpass），输入内容不出现在终端。
+    - 非交互环境（无 TTY）下从环境变量 `PANBRIDGE_IMPORT_CREDENTIAL`
+      读取（用于 CI/脚本），或从 stdin 管道读取。
+    - `--credential` 仅为兼容旧脚本保留，但会打印明确警告，强烈建议
+      改用无参数交互输入。
     """
     settings = Settings.from_env()
     engine, auth, service, cipher = _build(settings)
@@ -150,7 +162,18 @@ async def _import(provider: str, label: str, credential: str) -> int:
         print("❌ 未配置 PANBRIDGE_SECRET_KEY，无法加密存储账号凭据。")
         return 1
     try:
-        encrypted = cipher.encrypt(credential)
+        if credential is None:
+            credential = _read_credential_securely()
+        else:
+            print(
+                "⚠️  警告：通过 --credential 参数传入凭据会将其写入 Shell "
+                "历史与进程列表，存在泄漏风险。建议改为不带 --credential "
+                "运行，使用交互式无回显输入。"
+            )
+        if not credential or not credential.strip():
+            print("❌ 凭据为空，已取消导入。")
+            return 1
+        encrypted = cipher.encrypt(credential.strip())
         account = await service.add_account(
             provider, label or f"{provider}-manual", encrypted
         )
@@ -163,6 +186,29 @@ async def _import(provider: str, label: str, credential: str) -> int:
         return 0
     finally:
         await engine.dispose()
+
+
+def _read_credential_securely() -> str:
+    """安全读取凭据：优先交互无回显，其次环境变量，最后 stdin 管道。
+
+    返回读到的凭据字符串（可能为空）。绝不把凭据打印到终端或日志。
+    """
+    # 1) 交互式 TTY：getpass 无回显输入
+    if sys.stdin.isatty():
+        return getpass.getpass("请输入凭据（Cookie/token，输入不回显）: ")
+
+    # 2) 环境变量（CI/脚本，非交互）
+    env_val = os.environ.get("PANBRIDGE_IMPORT_CREDENTIAL")
+    if env_val:
+        return env_val
+
+    # 3) stdin 管道（echo "..." | panbridge auth import ...）
+    if not sys.stdin.isatty():
+        data = sys.stdin.read()
+        if data:
+            return data.strip()
+
+    return ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -181,7 +227,14 @@ def main(argv: list[str] | None = None) -> int:
     import_p = auth_sub.add_parser("import", help="手工导入凭据（加密入库）")
     import_p.add_argument("--provider", required=True, help="网盘平台")
     import_p.add_argument("--label", default="", help="账号标签（可选）")
-    import_p.add_argument("--credential", required=True, help="凭据（Cookie/token）")
+    import_p.add_argument(
+        "--credential",
+        default=None,
+        help=(
+            "凭据（Cookie/token）。【不安全】会写入 Shell 历史，"
+            "建议省略此参数，改用交互式无回显输入。"
+        ),
+    )
 
     status_p = auth_sub.add_parser("status", help="查询登录状态")
     status_p.add_argument("--provider", default="quark", help="网盘平台")
@@ -194,9 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.auth_command == "login":
         return asyncio.run(_login(args.provider))
     if args.auth_command == "import":
-        return asyncio.run(
-            _import(args.provider, args.label, args.credential)
-        )
+        return asyncio.run(_import(args.provider, args.label, args.credential))
     if args.auth_command == "status":
         return asyncio.run(_status(args.provider))
     if args.auth_command == "logout":
