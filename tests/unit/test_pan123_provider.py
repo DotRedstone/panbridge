@@ -254,3 +254,27 @@ async def test_get_share_download_info_missing_file(monkeypatch):
     with pytest.raises(DomainError) as exc:
         await p.get_share_download_info("abc123", None, "999")
     assert exc.value.code == ErrorCode.DOWNLOAD_FAILED
+
+
+def test_map_error_quota_exhausted():
+    """5112 分享方流量包不足 → QUOTA_EXCEEDED（非风控/限速）。"""
+    p = Pan123Provider(cipher=None)
+    err = p._map_error({"code": 5112, "message": "分享方提取流量包不足"})
+    assert err.code == ErrorCode.QUOTA_EXCEEDED
+    assert err.retryable is False
+
+
+def test_map_share_item_preserves_download_metadata():
+    """_map_share_item 应保留 etag/s3keyFlag 到 raw，供匿名下载使用。"""
+    item = {
+        "FileId": 1001,
+        "FileName": "a.zip",
+        "Type": 0,
+        "Size": 2048,
+        "Etag": "e1",
+        "S3KeyFlag": "f1",
+    }
+    f = Pan123Provider._map_share_item(item)
+    assert f.raw["etag"] == "e1"
+    assert f.raw["s3keyFlag"] == "f1"
+    assert f.raw["fileId"] == "1001"

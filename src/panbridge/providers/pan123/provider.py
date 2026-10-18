@@ -48,11 +48,15 @@ from panbridge.providers.base import ShareProvider
 # 分享短码解析域名（/gsb/s/share-key）
 _SHARE_ROOT = "https://www.123pan.cn"
 _GSB_SHARE_KEY = _SHARE_ROOT + "/gsb/s/share-key"
-_BApi = _SHARE_ROOT + "/api"
+# 下载直链接口使用 yun.123pan.com 的 /b/api（与文件列表个性化域名不同）。
+# 文件列表用 <uid>.share.123pan.cn/api/share/get，下载用此 BApi。
+_BApi = "https://yun.123pan.com/b/api"
+# 账号接口（需登录）使用 www.123pan.com/api（独立于分享 /b/api）。
+_AApi = "https://www.123pan.com/api"
 
 _HEADERS = {
-    "origin": "https://www.123pan.cn",
-    "referer": "https://www.123pan.cn/",
+    "origin": "https://yun.123pan.com",
+    "referer": "https://yun.123pan.com/",
     "user-agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -180,6 +184,13 @@ class Pan123Provider(ShareProvider):
             return DomainError(
                 ErrorCode.ACCOUNT_EXPIRED, "123 token invalid", retryable=False
             )
+        # 5112 等：分享方流量包不足（业务限制，非协议/风控错误）。
+        if code == 5112 or "流量包不足" in msg or "流量包" in msg:
+            return DomainError(
+                ErrorCode.QUOTA_EXCEEDED,
+                "123 share quota exhausted (sharer traffic package used up)",
+                retryable=False,
+            )
         if "流量" in msg or "限速" in msg or "风控" in msg:
             return DomainError(
                 ErrorCode.RATE_LIMITED, "123 rate limited or risk control"
@@ -285,7 +296,7 @@ class Pan123Provider(ShareProvider):
 
     async def validate_account(self, account: Account) -> bool:
         token = self._decrypt_credential(account)
-        url = _signed_url(_BApi + "/user/info")
+        url = _signed_url(_AApi + "/user/info")
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
                 url,
@@ -327,7 +338,7 @@ class Pan123Provider(ShareProvider):
             "trashed": "false",
             "Page": "1",
         }
-        url = _signed_url(_BApi + "/file/list/new")
+        url = _signed_url(_AApi + "/file/list/new")
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
                 url,
@@ -346,23 +357,44 @@ class Pan123Provider(ShareProvider):
         items = data.get("data", {}).get("InfoList", [])
         return [self._map_share_item(it) for it in items]
 
+    async def _find_file_recursive(
+        self, full_key: str, password: str | None, file_id: str,
+        parent_id: str = "0", depth: int = 0,
+    ) -> ShareFile | None:
+        """递归查找分享中的目标文件（含子目录），返回带 raw 的 ShareFile。
+
+        分享文件可能位于多层子目录中，直链解析需要其 etag/s3keyFlag，
+        故需递归遍历定位。限制最大深度，避免异常分享导致失控递归。
+        """
+        if depth > 10:
+            return None
+        files = await self._get_share_files(full_key, password, parent_id)
+        for f in files:
+            if f.file_id == str(file_id):
+                return f
+        for f in files:
+            if f.is_dir:
+                found = await self._find_file_recursive(
+                    full_key, password, file_id, f.file_id, depth + 1
+                )
+                if found is not None:
+                    return found
+        return None
+
     async def get_share_download_info(
         self, share_id: str, password: str | None, file_id: str
     ) -> dict[str, Any]:
         """解析分享中单个文件的直链（匿名，无需登录）。
 
-        流程：重新解析分享短码 → 个性化域名文件列表 → 找到目标文件
-        （含 etag/s3keyFlag）→ POST /api/share/download/info 拿直链。
+        流程：重新解析分享短码 → 递归查找目标文件（含 etag/s3keyFlag）
+        → POST /api/share/download/info 拿直链。
         file_id 为目标文件的 FileId（由 inspect_share 的 files 提供）。
         """
         full_key = share_id
         if password and "-" not in share_id:
             full_key = f"{share_id}-{password}"
 
-        files = await self._get_share_files(full_key, password)
-        target = next(
-            (f for f in files if f.file_id == str(file_id)), None
-        )
+        target = await self._find_file_recursive(full_key, password, str(file_id))
         if target is None:
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,
@@ -396,7 +428,7 @@ class Pan123Provider(ShareProvider):
         """
         token = self._decrypt_credential(account)
         body = {"driveId": 0, "etag": "", "fileId": int(file_id), "s3keyFlag": ""}
-        url = _signed_url(_BApi + "/file/download_info")
+        url = _signed_url(_AApi + "/file/download_info")
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 url,
@@ -435,11 +467,16 @@ class Pan123Provider(ShareProvider):
         传入文件信息（etag/fileId/s3keyFlag/size），返回真实直链 URL。
         这是 123 云盘匿名下载的核心能力。
         """
+        # fileId 需为整数（协议要求），从 raw 中恢复。
+        try:
+            fid = int(file_info.get("fileId", file_info.get("file_id", 0)))
+        except (TypeError, ValueError):
+            fid = file_info.get("fileId", "")
         body = {
             "shareKey": share_key,
             "SharePwd": password or "",
             "etag": file_info.get("etag"),
-            "fileId": file_info.get("fileId"),
+            "fileId": fid,
             "s3keyFlag": file_info.get("s3keyFlag"),
             "size": file_info.get("size"),
         }
