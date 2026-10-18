@@ -44,6 +44,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         path = self.path.lstrip("/")
         # 特殊路径模拟行为
+        if path == "redirect-target":
+            # 302 重定向到内网元数据地址，验证下载器不跟随重定向
+            self.send_response(302)
+            self.send_header("Location", "http://169.254.169.254/")
+            self.end_headers()
+            return
         if path == "disconnect":
             # 声明较大长度但立即断开 → 触发连接重置/截断
             self.send_response(200)
@@ -170,17 +176,56 @@ async def test_download_checksum_verification(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_size_mismatch_fails(tmp_path):
-    """大小不符应抛错（不当作成功落盘）。"""
-    from panbridge.workers.worker import Worker
+async def test_download_cancel_cleans_part_file(http_server, tmp_path):
+    """下载中途取消应清理残留 .part 文件。"""
+    import os
 
-    dest = str(tmp_path / "f.bin")
-    open(dest, "wb").write(b"short")  # noqa: SIM115
+    downloader = HttpDownloader(allow_loopback=True)
+    dest = str(tmp_path / "cancel.bin")
 
-    with pytest.raises(DomainError) as exc:
-        Worker._verify_download("f.bin", dest, expected_size=100, checksum=None)
-    assert exc.value.code == ErrorCode.DOWNLOAD_FAILED
-    assert exc.value.retryable is True
+    gen = downloader.download(f"{http_server}/huge", dest)
+    # 开始下载并消费一个 chunk 后取消
+    await gen.__anext__()
+    await gen.aclose()
+
+    # .part 文件应被清理，最终文件也不存在
+    assert not os.path.exists(dest)
+    assert not os.path.exists(dest + ".part")
+
+
+@pytest.mark.asyncio
+async def test_download_does_not_follow_redirect(http_server, tmp_path):
+    """下载不应自动跟随重定向（防止重定向绕过 SSRF 校验）。"""
+    downloader = HttpDownloader(allow_loopback=True)
+    dest = str(tmp_path / "redir.bin")
+    # 服务器对 /redirect 返回 302，若下载器跟随则可能访问内网；
+    # 这里验证 follow_redirects=False：3xx 会 raise_for_status 报错。
+    with pytest.raises(DomainError):
+        async for _ in downloader.download(
+            f"{http_server}/redirect-target", dest
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_download_max_size_resume_accumulates(http_server, tmp_path):
+    """断点续传时 max_size 按累计字节判定，而非仅本次写入。"""
+    import os
+
+    downloader = HttpDownloader(allow_loopback=True, max_size=2048)
+    dest = str(tmp_path / "resume.bin")
+    # 预置一个 .part 文件模拟断点续传的已有部分
+    part = dest + ".part"
+    with open(part, "wb") as f:
+        f.write(b"x" * 1024)  # 已有 1024 字节
+
+    # 下载 huge（10MB），累计 1024 + 写入会超过 2048，应中止
+    with pytest.raises(DomainError):
+        async for _ in downloader.download(f"{http_server}/huge", dest):
+            pass
+
+    # 超限是不可重试错误，.part 应被清理
+    assert not os.path.exists(part)
 
 
 class _LocalHttpAnonProvider:

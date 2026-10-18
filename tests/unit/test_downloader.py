@@ -44,7 +44,7 @@ class _FakeClient:
     async def __aexit__(self, *args):
         return False
 
-    def stream(self, method, url, headers=None):
+    def stream(self, method, url, headers=None, follow_redirects=False):
         return _FakeResponse(self._stream)
 
 
