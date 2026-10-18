@@ -134,6 +134,20 @@ async def _verify_one(
         selection = [target.file_id]
         result["file"] = target.name
     else:
+        # 完整目录：下载前先预估整目录大小，超限则拒绝下载（fail fast），
+        # 避免先下载数 GB 再回头校验造成浪费。
+        estimated = await _estimate_total_size(
+            provider_impl, extracted.share_id, extracted.password, share.files
+        )
+        result["estimated_bytes"] = estimated
+        if estimated is not None and estimated > max_bytes:
+            result["stage"] = "precheck"
+            result["error"] = (
+                f"整目录预估大小 {estimated} 字节超过限制 {max_bytes} 字节，"
+                f"已阻止下载；请用 --mode sample 抽样验证或提高 "
+                f"--max-download-bytes"
+            )
+            return result
         # 完整目录：不设 selection，Worker 递归下载所有文件。
         result["file"] = "(整目录)"
 
@@ -174,7 +188,9 @@ async def _verify_one(
         "anonymous_download" if anon_capable else "save_and_download"
     )
 
-    # Step 7: 校验文件大小（完整目录模式）
+    # Step 7: 下载后二次校验（防御性兜底；正常情况已在下载前拦截）。
+    # 分享列表 size 为 None 时前置预估会返回「未知」而不阻断，此处
+    # 依据实际落盘大小再校验一次，双保险。
     if mode == "full":
         total = sum(sz for _, sz in result["downloaded"] if sz)
         if total > max_bytes:
@@ -207,6 +223,42 @@ async def _find_first_file(provider, share_id, password, files, depth=0):
             if found:
                 return found
     return None
+
+
+async def _estimate_total_size(provider, share_id, password, files, depth=0):
+    """递归预估分享整目录文件总字节数（用于下载前限额检查）。
+
+    文件 size 为 None 时无法精确统计，返回 None 表示「未知」（调用方
+    据此不阻断，交由下载器 max_size 兜底）。超过 5 层深度则停止深挖，
+    按当前已知大小返回（避免过度递归）。
+    """
+    total = 0
+    unknown = False
+    for f in files:
+        if f.is_dir:
+            if depth >= 5:
+                unknown = True
+                continue
+            try:
+                sub = await provider.list_share_files(
+                    share_id, password, f.file_id
+                )
+            except Exception:  # noqa: BLE001
+                unknown = True
+                continue
+            sub_total = await _estimate_total_size(
+                provider, share_id, password, sub, depth + 1
+            )
+            if sub_total is None:
+                unknown = True
+            else:
+                total += sub_total
+        else:
+            if f.size is None:
+                unknown = True
+            else:
+                total += f.size
+    return None if unknown else total
 
 
 async def main() -> None:
@@ -253,7 +305,11 @@ async def main() -> None:
     registry = build_registry(cipher)
 
     download_dir = args.download_dir or tempfile.mkdtemp(prefix="panbridge-accept-")
-    downloader = HttpDownloader(timeout=60, max_size=10 * 1024 * 1024)
+    # 单文件下载量上限与 --max-download-bytes 对齐：即便整目录预估漏判
+    # （size 未知），下载器也会在单文件超过上限时硬性中止，避免下载超大文件。
+    downloader = HttpDownloader(
+        timeout=60, max_size=args.max_download_bytes
+    )
     service = ApplicationService(registry, sessionmaker, downloader=downloader)
     worker = Worker(
         registry, sessionmaker, downloader=downloader, download_dir=download_dir,
