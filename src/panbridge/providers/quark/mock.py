@@ -31,6 +31,7 @@ class MockProvider(ShareProvider):
             "save_shared_files",
             "list_account_files",
             "get_download_info",
+            "get_share_download_info",
             "validate_account",
             "create_folder",
         }
@@ -107,6 +108,23 @@ class MockProvider(ShareProvider):
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
+        if file_id.startswith("downloadfail"):
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "download link expired",
+                retryable=True,
+            )
+        return {
+            "url": f"https://download.mock.local/{file_id}",
+            "name": f"{file_id}.bin",
+            "size": 1024,
+            "checksum": "sha256:deadbeef",
+        }
+
+    async def get_share_download_info(
+        self, share_id: str, password: str | None, file_id: str
+    ) -> dict[str, Any]:
+        """模拟匿名分享直链下载（无需账号）。"""
         if file_id.startswith("downloadfail"):
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,
