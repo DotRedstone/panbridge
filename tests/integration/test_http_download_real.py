@@ -27,7 +27,7 @@ from panbridge.downloads.http import HttpDownloader
 
 # 真实可下载的字节内容（每种路径固定内容，用于校验和比对）
 _CONTENT = {
-    "video.mkv": b"FAKE-MKV-" * 200,          # 1800 字节
+    "video.mkv": b"FAKE-MKV-" * 200,  # 1800 字节
     "subtitle.srt": b"1\n00:00:00,000 --> 00:00:01,000\nhello\n",
     "folder/deep.txt": b"deep file content\n" * 30,
     "folder/sub/deepest.bin": bytes(range(256)),
@@ -45,9 +45,38 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.lstrip("/")
         # 特殊路径模拟行为
         if path == "redirect-target":
-            # 302 重定向到内网元数据地址，验证下载器不跟随重定向
+            # 302 重定向到内网元数据地址，验证下载器不跟随到内网
             self.send_response(302)
             self.send_header("Location", "http://169.254.169.254/")
+            self.end_headers()
+            return
+        if path == "redirect-cdn":
+            # 302 重定向到同服务器的真实文件（模拟 CDN 跳转，安全目标）
+            self.send_response(302)
+            self.send_header("Location", "/video.mkv")
+            self.end_headers()
+            return
+        if path == "redirect-cross-origin":
+            # 302 重定向到内网私有地址（模拟恶意跨域跳转，应拦截）
+            self.send_response(302)
+            self.send_header("Location", "http://192.168.1.1/secret")
+            self.end_headers()
+            return
+        if path == "redirect-loop":
+            # 302 重定向到自己（无限循环，应因跳数超限被拒绝）
+            self.send_response(302)
+            self.send_header("Location", "/redirect-loop")
+            self.end_headers()
+            return
+        if path == "redirect-chain":
+            # 多跳重定向：302 -> redirect-chain2 -> redirect-cdn -> 文件
+            self.send_response(302)
+            self.send_header("Location", "/redirect-chain2")
+            self.end_headers()
+            return
+        if path == "redirect-chain2":
+            self.send_response(302)
+            self.send_header("Location", "/redirect-cdn")
             self.end_headers()
             return
         if path == "disconnect":
@@ -194,17 +223,126 @@ async def test_download_cancel_cleans_part_file(http_server, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_does_not_follow_redirect(http_server, tmp_path):
-    """下载不应自动跟随重定向（防止重定向绕过 SSRF 校验）。"""
+async def test_download_redirect_to_metadata_blocked(http_server, tmp_path):
+    """重定向到云元数据地址应被 SSRF 校验拦截。"""
     downloader = HttpDownloader(allow_loopback=True)
     dest = str(tmp_path / "redir.bin")
-    # 服务器对 /redirect 返回 302，若下载器跟随则可能访问内网；
-    # 这里验证 follow_redirects=False：3xx 会 raise_for_status 报错。
+    with pytest.raises(DomainError):
+        async for _ in downloader.download(f"{http_server}/redirect-target", dest):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_download_follows_safe_redirect(http_server, tmp_path):
+    """安全的 CDN 跳转（同域重定向到真实文件）应成功下载真实字节。"""
+    downloader = HttpDownloader(allow_loopback=True)
+    dest = str(tmp_path / "redir-cdn.mkv")
+    async for _ in downloader.download(f"{http_server}/redirect-cdn", dest):
+        pass
+    data = open(dest, "rb").read()  # noqa: SIM115
+    assert data == _CONTENT["video.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_download_redirect_to_private_blocked(http_server, tmp_path):
+    """重定向到内网私有地址应被拦截（逐跳 SSRF 校验）。"""
+    downloader = HttpDownloader(allow_loopback=True)
+    dest = str(tmp_path / "redir-priv.bin")
     with pytest.raises(DomainError):
         async for _ in downloader.download(
-            f"{http_server}/redirect-target", dest
+            f"{http_server}/redirect-cross-origin", dest
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_download_redirect_loop_rejected(http_server, tmp_path):
+    """重定向循环（跳数超限）应被拒绝。"""
+    downloader = HttpDownloader(allow_loopback=True, max_redirects=5)
+    dest = str(tmp_path / "redir-loop.bin")
+    with pytest.raises(DomainError) as exc:
+        async for _ in downloader.download(f"{http_server}/redirect-loop", dest):
+            pass
+    assert exc.value.code == ErrorCode.DOWNLOAD_FAILED
+
+
+@pytest.mark.asyncio
+async def test_download_follows_redirect_chain(http_server, tmp_path):
+    """多跳重定向链应最终下载到真实文件。"""
+    downloader = HttpDownloader(allow_loopback=True)
+    dest = str(tmp_path / "redir-chain.mkv")
+    async for _ in downloader.download(f"{http_server}/redirect-chain", dest):
+        pass
+    data = open(dest, "rb").read()  # noqa: SIM115
+    assert data == _CONTENT["video.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_download_strips_sensitive_headers_on_cross_origin(http_server, tmp_path):
+    """跨域跳转应剥离 Cookie/Authorization 等敏感头。"""
+    # 两个本地服务器：server A 重定向到 server B（不同端口 = 跨域）。
+    # 验证 A（同域）收到敏感头，B（跨域）被剥离。
+    import threading
+
+    captured = {}
+
+    class _TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            captured["target"] = dict(self.headers)
+            data = _CONTENT["video.mkv"]
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            self.wfile.flush()
+
+        def log_message(self, *args):  # noqa: A003
+            pass
+
+    class _StartHandler(BaseHTTPRequestHandler):
+        target_url = ""
+
+        def do_GET(self):  # noqa: N802
+            captured["start"] = dict(self.headers)
+            self.send_response(302)
+            self.send_header("Location", self.target_url)
+            self.end_headers()
+
+        def log_message(self, *args):  # noqa: A003
+            pass
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), _TargetHandler)
+    t1 = threading.Thread(target=target.serve_forever, daemon=True)
+    t1.start()
+    thost, tport = target.server_address
+
+    _StartHandler.target_url = f"http://127.0.0.1:{tport}/final"
+    start = ThreadingHTTPServer(("127.0.0.1", 0), _StartHandler)
+    t2 = threading.Thread(target=start.serve_forever, daemon=True)
+    t2.start()
+    shost, sport = start.server_address
+
+    try:
+        downloader = HttpDownloader(allow_loopback=True)
+        dest = str(tmp_path / "strip.bin")
+        headers = {"Cookie": "session=secret", "Authorization": "Bearer xyz"}
+        async for _ in downloader.download(
+            f"http://127.0.0.1:{sport}/start", dest, headers=headers
+        ):
+            pass
+        assert open(dest, "rb").read() == _CONTENT["video.mkv"]  # noqa: SIM115
+        # 第一跳（同域 start）收到敏感头
+        assert captured.get("start", {}).get("Cookie") == "session=secret"
+        # 跨域（不同端口）跳转后，敏感头应被剥离
+        assert captured.get("target", {}).get("Cookie") is None
+        assert captured.get("target", {}).get("Authorization") is None
+    finally:
+        start.shutdown()
+        start.server_close()
+        target.shutdown()
+        target.server_close()
+        t2.join(timeout=2)
+        t1.join(timeout=2)
 
 
 @pytest.mark.asyncio
@@ -269,7 +407,9 @@ class _LocalHttpAnonProvider:
         if parent_id == "folder":
             return [
                 ShareFile(
-                    file_id="folder/deep.txt", name="deep.txt", size=510,
+                    file_id="folder/deep.txt",
+                    name="deep.txt",
+                    size=510,
                     parent_id="folder",
                 ),
             ]
@@ -290,9 +430,7 @@ class _LocalHttpAnonProvider:
 
 
 @pytest.mark.asyncio
-async def test_worker_downloads_real_bytes_preserving_structure(
-    http_server, tmp_path
-):
+async def test_worker_downloads_real_bytes_preserving_structure(http_server, tmp_path):
     """端到端：Worker 经本地 HTTP 服务器下载真实字节并保留目录结构。"""
     from panbridge.application.service import ApplicationService, CreateTaskInput
     from panbridge.domain.enums import Action, TaskStatus
@@ -328,6 +466,7 @@ async def test_worker_downloads_real_bytes_preserving_structure(
             action=Action.DOWNLOAD,
         )
     )
+
     # 运行 worker 一小段时间
     async def _run():
         await worker.run()
@@ -354,12 +493,9 @@ async def test_worker_downloads_real_bytes_preserving_structure(
     import os
 
     assert os.path.isfile(os.path.join(worker.download_dir, "video.mkv"))
-    assert os.path.isfile(
-        os.path.join(worker.download_dir, "folder", "deep.txt")
-    )
+    assert os.path.isfile(os.path.join(worker.download_dir, "folder", "deep.txt"))
     with open(os.path.join(worker.download_dir, "video.mkv"), "rb") as f:
         assert f.read() == _CONTENT["video.mkv"]
 
     await worker.stop()
     await engine.dispose()
-
