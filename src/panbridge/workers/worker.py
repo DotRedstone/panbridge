@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -538,18 +539,25 @@ class Worker:
         - skip：目标已存在时跳过（返回 None 由调用方忽略）
         - rename：自动追加序号避免覆盖
         - overwrite：直接覆盖（默认行为，与现状一致）
-        """
-        import os
 
-        dest = os.path.join(self.download_dir, rel_path)
+        路径安全：先经 sanitize 归一化、再经 realpath 确认不越界，
+        并拒绝符号链接，防止下载写入 download_dir 之外。
+        """
+        from panbridge.downloads.local_path import (
+            ensure_no_symlink,
+            resolve_safe_local_path,
+        )
+
+        dest = resolve_safe_local_path(self.download_dir, rel_path)
         if on_conflict == "rename" and os.path.exists(dest):
             base, ext = os.path.splitext(rel_path)
             counter = 1
             while os.path.exists(dest):
-                dest = os.path.join(
+                dest = resolve_safe_local_path(
                     self.download_dir, f"{base} ({counter}){ext}"
                 )
                 counter += 1
+        ensure_no_symlink(dest)
         return dest
 
     async def _set_status(self, task_id: str, status: TaskStatus) -> None:
