@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from panbridge.domain.errors import DomainError, ErrorCode
-from panbridge.providers.lanzou.provider import LanzouProvider
+from panbridge.providers.lanzou.provider import (
+    LanzouProvider,
+    _solve_acw_sc_v2,
+)
 
 
 class _FakeResponse:
@@ -159,3 +162,43 @@ async def test_no_sign_raises_invalid_share(monkeypatch):
     with pytest.raises(DomainError) as exc:
         await p.inspect_share("https://www.lanzou.com/abc123", None)
     assert exc.value.code == ErrorCode.INVALID_SHARE
+
+
+def test_solve_acw_sc_v2():
+    """acw_sc__v2 反爬算法：arg1 重排 + XOR 密钥。"""
+    html = (
+        "<html><script>var arg1='F23C7AC7FDAD295172462574779DD3A425ADF0AE';"
+        "(function(){...})()</script></html>"
+    )
+    result = _solve_acw_sc_v2(html)
+    assert result is not None
+    assert len(result) == 40
+    assert all(c in "0123456789abcdef" for c in result)
+
+
+def test_solve_acw_sc_v2_no_challenge():
+    """无 arg1 的普通页面返回 None。"""
+    assert _solve_acw_sc_v2("<html>normal page</html>") is None
+
+
+def test_solve_acw_sc_v2_known_value():
+    """用已知 arg1 验证算法确定性（与逆向参考一致）。"""
+    # 构造一个 arg1，验证输出与手动计算一致。
+    html = "var arg1='0000000000000000000000000000000000000000';"
+    result = _solve_acw_sc_v2(html)
+    # 全 0 的 arg1 重排后仍全 0，XOR 密钥即密钥本身。
+    assert result == "3000176000856006061501533003690027800375"
+
+
+def test_map_error_captcha():
+    """下载节点验证码风控应返回 ACTION_REQUIRED。"""
+    err = LanzouProvider._map_error(200, {"zt": 0, "url": "验证码错误"})
+    assert err.code == ErrorCode.ACTION_REQUIRED
+
+
+def test_map_error_network_abnormal():
+    """网络异常需验证应返回 ACTION_REQUIRED。"""
+    err = LanzouProvider._map_error(
+        200, {"zt": 0, "info": "系统发现您的网络异常"}
+    )
+    assert err.code == ErrorCode.ACTION_REQUIRED

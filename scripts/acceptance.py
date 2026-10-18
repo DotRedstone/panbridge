@@ -6,17 +6,18 @@
    并验证完整链路。
 
 用法：
-    # 匿名可下载的平台（无需账号）
+    # 匿名可下载的平台（无需账号），抽样验证（下载第一个文件）
     python scripts/acceptance.py --share 'https://www.123pan.com/s/xxxx'
-    # 需转存的平台（先扫码登录）
-    python scripts/acceptance.py --share 'https://pan.quark.cn/s/xxxx'
+    # 完整目录验证（递归下载所有文件，保留目录结构）
+    python scripts/acceptance.py --share 'https://pan.quark.cn/s/xxxx' --mode full
+    # 限制最大下载量（超过则跳过整目录验证，仅抽样）
+    python scripts/acceptance.py --share '...' --mode full --max-download-bytes 10485760
 
     # 批量验收：把链接写进一个文本文件（每行一条）
     python scripts/acceptance.py --file links.txt
 
 安全约束：
 - 不使用明文 Cookie；凭据由应用层解密后仅在内存中使用。
-- 只下载分享中的第一个非目录文件（小文件），不批量下载。
 - 转存到独立子目录，不覆盖账号原有文件。
 - 下载到临时目录，完成后打印文件路径与大小。
 
@@ -24,13 +25,18 @@
 - 平台支持「匿名分享直链下载」（capabilities 含 get_share_download_info）
   → 走 DOWNLOAD（匿名，无需账号）。
 - 否则 → 走 SAVE_AND_DOWNLOAD（先转存再下载，需账号）。
+
+验收模式：
+- sample（默认）：功能抽样验证——只下载分享中的第一个非目录文件，
+  验证「解析 → 直链/转存 → 下载落盘」链路是否打通。通过不代表整目录可用。
+- full：完整目录验证——递归下载分享中所有文件，保留目录结构，校验
+  每个文件大小。通过才代表该平台多级目录能力完整可用。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import tempfile
 from pathlib import Path
 
@@ -48,6 +54,8 @@ from panbridge.persistence import (
 )
 from panbridge.providers.registry import ProviderRegistry
 from panbridge.workers.worker import Worker
+
+_DEFAULT_MAX_BYTES = 50 * 1024 * 1024  # 完整目录验证默认最多下载 50MB
 
 
 def build_full_registry(cipher: CredentialCipher | None) -> ProviderRegistry:
@@ -94,12 +102,27 @@ async def _get_account(service, sessionmaker, provider: str):
 
 
 async def _verify_one(
-    service, worker, sessionmaker, provider_impl, share_text: str, tmpdir: str
+    service,
+    worker,
+    sessionmaker,
+    provider_impl,
+    share_text: str,
+    tmpdir: str,
+    mode: str,
+    max_bytes: int,
 ) -> dict:
-    """验收单个分享链接，返回结果摘要。"""
+    """验收单个分享链接，返回结果摘要。
+
+    mode: "sample" 抽样验证（只下载第一个文件）；"full" 完整目录验证。
+    """
     extracted = extract_share(share_text)
     provider = extracted.provider
-    result = {"provider": provider, "share": share_text[:60], "ok": False}
+    result = {
+        "provider": provider,
+        "share": share_text[:60],
+        "ok": False,
+        "mode": mode,
+    }
 
     # Step 1: inspect 解析分享
     try:
@@ -111,44 +134,15 @@ async def _verify_one(
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
 
-    files = [f for f in share.files if not f.is_dir]
-    # 根目录全是目录时，递归找第一个非目录文件（最多 3 层）。
-    if not files:
-        async def _find_first_file(files, depth=0):
-            for f in files:
-                if not f.is_dir:
-                    return f
-            if depth >= 3:
-                return None
-            for f in files:
-                if f.is_dir:
-                    sub = await provider_impl.list_share_files(
-                        extracted.share_id, extracted.password, f.file_id
-                    )
-                    found = await _find_first_file(sub, depth + 1)
-                    if found:
-                        return found
-            return None
-
-        target = await _find_first_file(share.files)
-        if target is None:
-            result["stage"] = "inspect"
-            result["error"] = "分享中无非目录文件（递归 3 层后仍无）"
-            result["note"] = f"解析成功，标题={share.title!r}"
-            return result
-    else:
-        target = files[0]
     result["title"] = share.title
-    result["file"] = target.name
+    result["root_items"] = len(share.files)
 
-    # Step 2: 判断下载模式
+    # Step 2: 判断下载模式（匿名直链 vs 先转存）
     anon_capable = "get_share_download_info" in provider_impl.capabilities
     if anon_capable:
-        # 匿名直链下载（无需账号）
         action = Action.DOWNLOAD
         account_id = None
     else:
-        # 先转存再下载（需账号）
         action = Action.SAVE_AND_DOWNLOAD
         account = await _get_account(service, sessionmaker, provider)
         if account is None:
@@ -160,19 +154,37 @@ async def _verify_one(
             return result
         account_id = account.id
 
-    # Step 3: 创建任务
+    # Step 3: 决定 selection（抽样 vs 完整目录）
+    selection: list[str] | None = None
+    if mode == "sample":
+        # 抽样：只下载第一个非目录文件（递归查找）。
+        target = await _find_first_file(
+            provider_impl, extracted.share_id, extracted.password, share.files
+        )
+        if target is None:
+            result["stage"] = "inspect"
+            result["error"] = "分享中无非目录文件（递归 3 层后仍无）"
+            result["note"] = f"解析成功，标题={share.title!r}"
+            return result
+        selection = [target.file_id]
+        result["file"] = target.name
+    else:
+        # 完整目录：不设 selection，Worker 递归下载所有文件。
+        result["file"] = "(整目录)"
+
+    # Step 4: 创建任务
     task = await service.create_task(
         CreateTaskInput(
             text=share_text,
             action=action,
             account_id=account_id,
-            selection=[target.file_id],
+            selection=selection,
             destination=None,  # 转存时自动建独立文件夹
         )
     )
 
-    # Step 4: 等待完成
-    for _ in range(600):
+    # Step 5: 等待完成
+    for _ in range(6000):
         await asyncio.sleep(0.1)
         t = await service.get_task(task.id)
         if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
@@ -187,19 +199,49 @@ async def _verify_one(
         result["error"] = f"{t.error_code}: {t.error_message}"
         return result
 
-    # Step 5: 检查下载文件落盘
-    dl_dir = worker.download_dir
-    downloaded = []
-    if os.path.isdir(dl_dir):
-        downloaded = [
-            (f.name, os.path.getsize(os.path.join(dl_dir, f.name)))
-            for f in os.listdir(dl_dir)
-            if os.path.isfile(os.path.join(dl_dir, f.name))
-        ]
-    result["ok"] = bool(downloaded)
-    result["downloaded"] = downloaded
-    result["mode"] = "anonymous_download" if anon_capable else "save_and_download"
+    # Step 6: 检查下载文件落盘
+    files = (t.result or {}).get("files") or []
+    result["downloaded"] = [
+        (f["rel_path"], f.get("size")) for f in files
+    ]
+    result["ok"] = bool(files)
+    result["mode"] = (
+        "anonymous_download" if anon_capable else "save_and_download"
+    )
+
+    # Step 7: 校验文件大小（完整目录模式）
+    if mode == "full":
+        total = sum(sz for _, sz in result["downloaded"] if sz)
+        if total > max_bytes:
+            result["ok"] = False
+            result["error"] = (
+                f"整目录下载量 {total} 字节超过限制 {max_bytes} 字节，"
+                f"请用 --mode sample 抽样验证"
+            )
     return result
+
+
+async def _find_first_file(provider, share_id, password, files, depth=0):
+    """递归查找分享中第一个非目录文件（最多 3 层）。"""
+    for f in files:
+        if not f.is_dir:
+            return f
+    if depth >= 3:
+        return None
+    for f in files:
+        if f.is_dir:
+            try:
+                sub = await provider.list_share_files(
+                    share_id, password, f.file_id
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            found = await _find_first_file(
+                provider, share_id, password, sub, depth + 1
+            )
+            if found:
+                return found
+    return None
 
 
 async def main() -> None:
@@ -208,6 +250,19 @@ async def main() -> None:
     parser.add_argument("--file", help="批量链接文件（每行一条）")
     parser.add_argument(
         "--download-dir", help="下载目录（默认临时目录）", default=None
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["sample", "full"],
+        default="sample",
+        help="验收模式：sample=功能抽样（默认，只下载第一个文件）；"
+        "full=完整目录验证（递归下载所有文件并校验）",
+    )
+    parser.add_argument(
+        "--max-download-bytes",
+        type=int,
+        default=_DEFAULT_MAX_BYTES,
+        help=f"完整目录验证的最大下载量（字节，默认 {_DEFAULT_MAX_BYTES}）",
     )
     args = parser.parse_args()
 
@@ -241,7 +296,8 @@ async def main() -> None:
     )
     worker_task = asyncio.create_task(worker.run())
 
-    print(f"下载目录: {download_dir}\n")
+    print(f"下载目录: {download_dir}")
+    print(f"验收模式: {args.mode}（最大下载量 {args.max_download_bytes} 字节）\n")
     results = []
     try:
         for link in links:
@@ -249,16 +305,21 @@ async def main() -> None:
             provider_impl = registry.get(extracted.provider)
             print(f"=== 验收 [{extracted.provider}] {link[:60]} ===")
             r = await _verify_one(
-                service, worker, sessionmaker, provider_impl, link, download_dir
+                service, worker, sessionmaker, provider_impl, link,
+                download_dir, args.mode, args.max_download_bytes,
             )
             results.append(r)
             status = "✅" if r["ok"] else "❌"
-            print(f"  {status} {r.get('mode', '?')} | {r.get('file', '?')}")
+            print(f"  {status} [{r['mode']}] {r.get('file', '?')}")
             if not r["ok"]:
                 print(f"     错误: {r.get('error', '?')}")
             if r.get("downloaded"):
-                for name, size in r["downloaded"]:
-                    print(f"     已下载: {name} ({size} bytes)")
+                n = len(r["downloaded"])
+                print(f"     已下载 {n} 个文件:")
+                for rel, size in r["downloaded"][:10]:
+                    print(f"       - {rel} ({size} bytes)")
+                if n > 10:
+                    print(f"       ... 共 {n} 个文件")
             print()
     finally:
         worker._running = False
@@ -274,10 +335,10 @@ async def main() -> None:
     print("验收结果汇总：")
     for r in results:
         mark = "✅" if r["ok"] else "❌"
-        print(f"  {mark} [{r['provider']}] {r.get('mode', '?')} "
+        print(f"  {mark} [{r['provider']}] {r['mode']} "
               f"{r.get('file', r.get('error', ''))}")
     ok_count = sum(1 for r in results if r["ok"])
-    print(f"\n通过 {ok_count}/{len(results)}")
+    print(f"\n通过 {ok_count}/{len(results)}（模式 {args.mode}）")
 
 
 if __name__ == "__main__":
