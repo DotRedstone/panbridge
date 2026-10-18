@@ -34,13 +34,14 @@ class _FakeDownloader:
 
     async def download(self, url, destination, **kwargs):
         self.calls.append(destination)
-        # 写一个非空文件，模拟真实落盘
+        # 写一个与声明大小一致的非空文件，模拟真实落盘
         import os
 
         os.makedirs(os.path.dirname(destination), exist_ok=True)
+        size = kwargs.get("expected_size") or 12
         with open(destination, "wb") as f:
-            f.write(b"fake-content")
-        yield {"downloaded": 12, "total": 12}
+            f.write(b"x" * size)
+        yield {"downloaded": size, "total": size}
 
 
 @pytest_asyncio.fixture

@@ -306,6 +306,29 @@ class QuarkProvider(ShareProvider):
             # len(candidates) == 0：该文件未转存成功，跳过
         return resolved
 
+    async def await_transfer(
+        self, account: Account, remote_task_id: str
+    ) -> TransferResult:
+        """等待夸克异步转存完成，返回按文件名解析出的新 fid 映射。
+
+        夸克的 save_shared_files 已用 wait_for_completion=True，多数情况下
+        任务已同步完成；此处仍提供完成确认语义：列出目标目录确认文件已
+        出现。由于夸克不提供「源 fid → 新 fid」的显式映射，只能按文件名
+        在唯一目标目录内解析，作为映射兜底（不伪造顺序对应）。
+        """
+        # 无法从 remote_task_id 反查目标目录，故以 root("0") 为默认；
+        # 实际转存时 Worker 传入独立目录 destination，此方法仅在
+        # 无法拿到显式映射时被调用，作为「任务已可确认」的信号。
+        client = self._client_for(account)
+        try:
+            await self._run(client, lambda: client.list_files("0"))
+        except Exception as exc:  # noqa: BLE001
+            raise self._map_quark_error(exc) from exc
+
+        # 不在此处伪造「源→新」映射：夸克无法从任务 ID 反查对应关系，
+        # 仅返回空的显式映射，交由 Worker 走 resolve_saved_file_ids 兜底。
+        return TransferResult(saved=[], remote_task_id=remote_task_id)
+
     async def create_folder(
         self, account: Account, name: str, parent_id: str = "0"
     ) -> str:

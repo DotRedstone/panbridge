@@ -140,7 +140,7 @@ class MockProvider(ShareProvider):
             "url": f"https://download.mock.local/{file_id}",
             "name": f"{file_id}.bin",
             "size": 1024,
-            "checksum": "sha256:deadbeef",
+            "checksum": None,
         }
 
     async def get_share_download_info(
@@ -162,7 +162,7 @@ class MockProvider(ShareProvider):
             "url": f"https://download.mock.local/{file_id}",
             "name": name,
             "size": file.size if file is not None else 1024,
-            "checksum": "sha256:deadbeef",
+            "checksum": None,
         }
 
     @staticmethod

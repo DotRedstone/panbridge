@@ -330,6 +330,70 @@ class _IncompleteResolveProvider(MockProvider):
         return ["new-fid-1"]
 
 
+class _AsyncTransferProvider(MockProvider):
+    """模拟异步转存 + await_transfer 返回显式映射的平台。"""
+
+    async def save_shared_files(
+        self, account, share_id, password, file_ids, destination, on_conflict
+    ):
+        from panbridge.domain.models import TransferResult
+
+        return TransferResult(saved_file_ids=[], remote_task_id="mock-task")
+
+    async def await_transfer(self, account, remote_task_id):
+        # 返回显式「源 fid → 新 fid」映射（逐个可追溯）
+        from panbridge.domain.models import TransferResult
+
+        return TransferResult(
+            saved=[
+                {"source_fid": fid, "account_fid": f"acct-{fid}"}
+                for fid in ["mock001-f1", "mock001-f2", "mock001-f3", "mock001-f4"]
+            ],
+            remote_task_id=remote_task_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_transfer_with_explicit_mapping(tmp_path):
+    """异步转存平台通过 await_transfer 返回显式映射时应成功下载。"""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    await init_db(engine)
+    sessionmaker = create_sessionmaker(engine)
+
+    registry = ProviderRegistry()
+    registry.register(_AsyncTransferProvider())
+
+    downloader = _RecordingDownloader()
+    service = ApplicationService(registry, sessionmaker, downloader=downloader)
+    worker = Worker(
+        registry,
+        sessionmaker,
+        downloader=downloader,
+        download_dir=str(tmp_path / "dl"),
+        poll_interval=0.01,
+    )
+
+    async with session_scope(sessionmaker) as session:
+        await AccountRepository(session).add(
+            Account(id="acc1", provider="mock", label="t")
+        )
+
+    task = await service.create_task(
+        CreateTaskInput(
+            text="https://mock.local/s/mock001",
+            action=Action.SAVE_AND_DOWNLOAD,
+            account_id="acc1",
+        )
+    )
+    await _run_worker_once(worker)
+    result = await service.get_task(task.id)
+    assert result.status == TaskStatus.COMPLETED
+    assert len(result.result["files"]) == 4
+
+    await worker.stop()
+    await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_save_and_download_incomplete_resolve_fails(tmp_path):
     """转存后 resolve 返回的新 fid 数量不足时，应如实报错而非伪造成功。"""
@@ -375,20 +439,21 @@ async def test_save_and_download_incomplete_resolve_fails(tmp_path):
 
 
 class _RecordingDownloader:
-    """记录下载的 destination 路径，模拟真实落盘。"""
+    """记录下载的 destination 路径，模拟真实落盘（写入 expected_size 字节）。"""
 
     def __init__(self):
         self.destinations: list[str] = []
 
     async def download(self, url, destination, **kwargs):
         self.destinations.append(destination)
-        # 模拟实际创建文件
+        # 模拟实际创建文件，大小与声明一致（避免大小校验失败）
         import os
 
         os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
+        size = kwargs.get("expected_size") or 1
         with open(destination, "wb") as f:
-            f.write(b"x")
-        yield {"downloaded": 1, "total": 1}
+            f.write(b"x" * size)
+        yield {"downloaded": size, "total": size}
 
 
 @pytest.mark.asyncio

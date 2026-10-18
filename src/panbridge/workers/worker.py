@@ -244,7 +244,8 @@ class Worker:
                 # 用严格映射为每个 entry 绑定账号新 fid（缺失即失败）。
                 await self._apply_transfer_map(entries, transfer_map)
                 downloaded = await self._download_account_entries(
-                    provider, account, entries, task.on_conflict.value
+                    provider, account, entries, task.on_conflict.value,
+                    task_id=task.id,
                 )
             else:
                 # 纯 DOWNLOAD：优先匿名分享直链下载（无需账号）。
@@ -254,6 +255,7 @@ class Worker:
                     extracted.password,
                     entries,
                     task.on_conflict.value,
+                    task_id=task.id,
                 )
 
             return {
@@ -637,6 +639,8 @@ class Worker:
         password: str | None,
         entries: list[_Entry],
         on_conflict: str,
+        *,
+        task_id: str | None = None,
     ) -> list[dict]:
         """匿名分享直链下载（无需账号），保留相对目录结构。
 
@@ -646,6 +650,8 @@ class Worker:
         """
         results: list[dict] = []
         for ent in entries:
+            if task_id:
+                await self._check_cancelled(task_id)
             info = await provider.get_share_download_info(
                 share_id, password, ent.source_fid, file=ent.file
             )
@@ -664,7 +670,7 @@ class Worker:
             ):
                 pass
             size = _local_file_size(dest)
-            self._verify_size(name, expected_size, size)
+            self._verify_download(name, dest, expected_size, info.get("checksum"))
             results.append(
                 {
                     "name": name,
@@ -681,6 +687,8 @@ class Worker:
         account,
         entries: list[_Entry],
         on_conflict: str,
+        *,
+        task_id: str | None = None,
     ) -> list[dict]:
         """账号网盘文件下载（转存后），保留相对目录结构。
 
@@ -690,6 +698,8 @@ class Worker:
         """
         results: list[dict] = []
         for ent in entries:
+            if task_id:
+                await self._check_cancelled(task_id)
             if not ent.account_fid:
                 raise DomainError(
                     ErrorCode.DOWNLOAD_FAILED,
@@ -708,7 +718,7 @@ class Worker:
             ):
                 pass
             size = _local_file_size(dest)
-            self._verify_size(name, expected_size, size)
+            self._verify_download(name, dest, expected_size, info.get("checksum"))
             results.append(
                 {
                     "name": name,
@@ -720,19 +730,49 @@ class Worker:
         return results
 
     @staticmethod
-    def _verify_size(
-        name: str, expected_size: int | None, actual_size: int | None
+    def _verify_download(
+        name: str,
+        path: str,
+        expected_size: int | None,
+        checksum: str | None,
     ) -> None:
-        """校验下载文件大小，避免「空文件/截断文件」被当作成功。"""
-        if expected_size is None or actual_size is None:
-            return
-        if actual_size != expected_size:
-            logger.warning(
-                "size mismatch for %s: expected=%s actual=%s",
-                name,
-                expected_size,
-                actual_size,
-            )
+        """校验下载完整性：大小一致 + 可选校验和一致。
+
+        大小或校验和不匹配时抛 DOWNLOAD_FAILED（可重试），避免把
+        「空文件/截断文件/被篡改文件」当作成功落盘。
+        """
+        actual_size = _local_file_size(path)
+        if expected_size is not None and actual_size is not None:
+            if actual_size != expected_size:
+                raise DomainError(
+                    ErrorCode.DOWNLOAD_FAILED,
+                    f"size mismatch for {name!r}: expected={expected_size} "
+                    f"actual={actual_size}",
+                    retryable=True,
+                )
+        if checksum:
+            # 支持 "sha256:<hex>" 形式；不支持的格式跳过（不误判失败）。
+            algo, _, want = checksum.partition(":")
+            if algo.lower() == "sha256" and want:
+                import hashlib
+
+                h = hashlib.sha256()
+                try:
+                    with open(path, "rb") as f:
+                        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                            h.update(chunk)
+                except OSError as exc:
+                    raise DomainError(
+                        ErrorCode.DOWNLOAD_FAILED,
+                        f"cannot read downloaded file for checksum: {name!r}",
+                        retryable=True,
+                    ) from exc
+                if h.hexdigest().lower() != want.lower():
+                    raise DomainError(
+                        ErrorCode.DOWNLOAD_FAILED,
+                        f"checksum mismatch for {name!r}",
+                        retryable=True,
+                    )
 
     def _resolve_local_path(self, rel_path: str, on_conflict: str) -> str:
         """根据冲突策略确定本地下载路径（支持多级子目录）。
@@ -768,6 +808,24 @@ class Worker:
             if task and task.status != TaskStatus.CANCELLED:
                 task.status = status
                 await repo.update(task)
+
+    async def _check_cancelled(self, task_id: str) -> None:
+        """若任务已被取消，抛出取消信号，让 Worker 停止继续处理。
+
+        用于在耗时操作（多文件下载）之间做取消检查，避免用户取消后
+        仍继续下载剩余文件。取消后由 _complete/_fail 的 CANCELLED 判断
+        兜底，不会覆盖为 completed/failed。
+        """
+        from panbridge.domain.errors import ErrorCode as _EC
+
+        async with session_scope(self.sessionmaker) as session:
+            task = await TaskRepository(session).get(task_id)
+        if task is not None and task.status == TaskStatus.CANCELLED:
+            raise DomainError(
+                _EC.TASK_NOT_CANCELLABLE,
+                "task cancelled",
+                retryable=False,
+            )
 
     async def _complete(self, task_id: str, result: dict) -> None:
         async with session_scope(self.sessionmaker) as session:
