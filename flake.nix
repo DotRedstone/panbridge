@@ -20,6 +20,7 @@
             uv
             ruff
             sqlite
+            stdenv.cc.cc.lib
           ];
 
           # 强制 uv 使用 Nix 提供的 Python，禁止 uv 自行下载解释器
@@ -31,6 +32,8 @@
           UV_PROJECT_ENVIRONMENT = ".venv";
 
           shellHook = ''
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH"
+
             # 确保 Nix 提供的 uv/python 优先于 ~/.local/bin 等外部二进制。
             # uv 官方安装脚本会在 ~/.local/bin/env.fish 里前置该目录，
             # 其中的 python 是动态链接构建，NixOS 无法运行，必须被 Nix 覆盖。
