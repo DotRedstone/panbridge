@@ -29,6 +29,9 @@ secret.key
 .coverage
 htmlcov/
 
+# direnv 运行时缓存（含 Nix 派生路径，机子相关，不提交）
+.direnv/
+
 # 编辑器
 .idea/
 .vscode/
