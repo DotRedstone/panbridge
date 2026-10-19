@@ -21,6 +21,7 @@ import getpass
 import logging
 import os
 import sys
+import tempfile
 
 from panbridge.application.assembly import (
     build_auth_service,
@@ -39,8 +40,15 @@ logging.basicConfig(level=logging.WARNING)
 
 
 def _display_qr(qr_url: str, provider: str) -> None:
-    """在终端渲染 ASCII 二维码（无外部服务、无浏览器自动化）。"""
+    """渲染登录二维码：终端 ASCII + 落盘 PNG 图片文件（方便双击打开扫描）。
+
+    - ASCII：供纯终端环境直接扫。
+    - PNG：写到系统临时目录（不污染项目根目录），打印绝对路径，
+      用户用图片查看器打开后拿手机扫码即可。
+    - 兜底：渲染失败时打印登录链接（不含凭据，可浏览器打开）。
+    """
     print(f"\n请使用「{provider}」App 扫描下方二维码登录：\n")
+    png_path: str | None = None
     try:
         import qrcode
 
@@ -48,9 +56,18 @@ def _display_qr(qr_url: str, provider: str) -> None:
         qr.add_data(qr_url)
         qr.make(fit=True)
         qr.print_ascii(invert=True)
+        # 额外落盘一张 PNG，便于双击打开后用手机扫描。
+        img = qr.make_image(fill_color="black", back_color="white")
+        png_path = os.path.join(
+            tempfile.gettempdir(), f"panbridge-{provider}-login.png"
+        )
+        img.save(png_path)
     except Exception:  # noqa: BLE001
         # 二维码渲染失败时，给出可手动打开的链接（不包含凭据）
         print(f"二维码渲染失败，请在浏览器中打开：{qr_url}")
+    if png_path:
+        print(f"\n💡 已生成二维码图片：{png_path}")
+        print("   （可用图片查看器打开，用手机 App 扫码，比终端黑块更清晰）")
     print("\n（也可在浏览器打开登录链接）\n")
 
 

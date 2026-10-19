@@ -17,8 +17,10 @@ panbridge auth login --provider aliyun
 panbridge auth login --provider 115
 ```
 
-> 每条命令会在终端渲染 ASCII 二维码（或打印可手动打开的链接），
-> 用对应 App 扫码后自动完成凭据加密入库，最多等待 5 分钟。
+> 每条命令会在终端渲染 ASCII 二维码，**并同时落盘一张 PNG 图片**
+> （`/tmp/panbridge-<provider>-login.png`），用图片查看器打开后用手机 App 扫，
+> 比终端黑块更清晰。渲染失败时兜底打印可手动打开的链接。扫码后自动完成
+> 凭据加密入库，最多等待 5 分钟。
 
 ### 2. 真实账号转存 + 下载（最简验收）
 
@@ -45,6 +47,26 @@ printf '%s' 'BDUSS=...' | panbridge auth import --provider baidu
 ```
 
 > `--credential` 参数仅为兼容保留，会打印泄漏风险警告，不建议使用。
+
+### 4. 免扫码登录：从浏览器复制 Cookie 导入（夸克等平台）
+
+如果不想扫码，也可以直接从浏览器复制登录 Cookie 一次性导入，之后长期免扫码：
+
+1. 电脑浏览器登录 `https://pan.quark.cn/`（夸克网页版）。
+2. 按 `F12` 打开开发者工具 → **Network（网络）** 标签 → 刷新页面。
+3. 点任意一个 `pan.quark.cn` 的请求 → **Headers** → 找到 **Request Headers**
+   里的 `Cookie:`，复制整行值（`name=value; name2=value2; ...` 的完整字符串）。
+4. 导入（交互式无回显，Cookie 不落 Shell 历史）：
+
+   ```bash
+   panbridge auth import --provider quark --label my-quark
+   # 提示后粘贴 Cookie 并回车（输入不回显）
+   ```
+
+   > 也可以从环境变量或 stdin 安全导入，见上一节。
+
+导入后即可用 `panbridge auth status --provider quark` 查看登录状态，或直接
+`python scripts/acceptance.py --share '...'` 走转存下载，无需扫码。
 
 ---
 
