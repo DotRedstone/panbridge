@@ -6,6 +6,8 @@
     panbridge auth login --provider quark    # 终端显示二维码，夸克 App 扫码
     panbridge auth login --provider aliyun   # 阿里云盘 App 扫码
     panbridge auth login --provider 115      # 115 App 扫码
+    panbridge auth login --provider 123      # 123 云盘 App 扫码
+    panbridge auth login --provider uc       # UC 网盘 App 扫码
     # 手工导入凭据（安全：不经过命令行参数，交互式无回显输入）
     panbridge auth import --provider baidu            # 提示后无回显输入
     panbridge auth import --provider baidu --label work
@@ -91,7 +93,7 @@ async def _login(provider: str) -> int:
     try:
         info = await auth.start_qr_login(provider)
         session_id = info["session_id"]
-        _display_qr(info["qr_url"], info["provider"])
+        _display_qr(info["qr_url"], info.get("display_name") or info["provider"])
 
         print("等待扫码登录中（最多 5 分钟）...\n")
         for _ in range(150):  # 每 2 秒轮询一次
@@ -238,7 +240,9 @@ def main(argv: list[str] | None = None) -> int:
     auth_parser = sub.add_parser("auth", help="账号认证管理")
     auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
 
-    login_p = auth_sub.add_parser("login", help="扫码登录（quark/aliyun/115）")
+    login_p = auth_sub.add_parser(
+        "login", help="扫码登录（quark/aliyun/115/123/uc）"
+    )
     login_p.add_argument("--provider", default="quark", help="网盘平台")
 
     import_p = auth_sub.add_parser("import", help="手工导入凭据（加密入库）")

@@ -194,6 +194,7 @@ class QrAuthService:
         return {
             "session_id": session_id,
             "provider": provider,
+            "display_name": getattr(backend, "display_name", provider),
             "qr_url": ticket.qr_url,
         }
 

@@ -123,12 +123,14 @@ def build_auth_service(
     from panbridge.providers.pan115.qr_backend import Pan115QrBackend
     from panbridge.providers.pan123.qr_backend import Pan123QrBackend
     from panbridge.providers.quark.qr_backend import QuarkQrBackend
+    from panbridge.providers.uc.qr_backend import UcQrBackend
 
     for backend_cls in (
         QuarkQrBackend,
         AliyunQrBackend,
         Pan115QrBackend,
         Pan123QrBackend,
+        UcQrBackend,
     ):
         try:
             qr_auth.register_backend(backend_cls())

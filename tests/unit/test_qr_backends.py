@@ -401,3 +401,139 @@ async def test_pan123_backend_finish_before_confirm(monkeypatch):
     with pytest.raises(DomainError) as exc:
         await backend.finish(ticket)
     assert exc.value.code == ErrorCode.ACTION_REQUIRED
+
+
+# ---- UC 网盘后端 ----
+
+
+class _FakeUcResponse:
+    def __init__(self, payload: dict, status: int = 200):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeUcCookie:
+    def __init__(self, name: str, value: str, domain: str = "drive.uc.cn"):
+        self.name = name
+        self.value = value
+        self.domain = domain
+
+
+class _FakeUcClient:
+    """模拟 UC 扫码登录的 httpx.AsyncClient（含 cookie jar）。"""
+
+    def __init__(self):
+        self.service_ticket = ""
+        self.jar: list[_FakeUcCookie] = []
+
+    @property
+    def cookies(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    async def aclose(self):
+        return None
+
+    async def post(self, url, data=None, headers=None):
+        if "getTokenForQrcodeLogin" in url:
+            return _FakeUcResponse(
+                {
+                    "status": 2000000,
+                    "message": "ok",
+                    "data": {"members": {"token": "uc-token"}},
+                }
+            )
+        if "getServiceTicketByQrcodeToken" in url:
+            if self.service_ticket:
+                return _FakeUcResponse(
+                    {
+                        "status": 2000000,
+                        "message": "ok",
+                        "data": {"members": {"service_ticket": self.service_ticket}},
+                    }
+                )
+            return _FakeUcResponse({"status": 50004001, "message": "waiting"})
+        return _FakeUcResponse({"status": 50004002, "message": "unknown"}, 400)
+
+    async def get(self, url, params=None, headers=None):
+        # 换 Cookie 阶段：模拟服务端下发 __puus 等鉴权 Cookie
+        self.jar.append(_FakeUcCookie("__puus", "puus-value"))
+        self.jar.append(_FakeUcCookie("__kps", "kps-value"))
+        return _FakeUcResponse({"status": 2000000, "message": "ok"})
+
+
+@pytest.mark.asyncio
+async def test_uc_backend_flow(monkeypatch):
+    import panbridge.providers.uc.qr_backend as uc_mod
+
+    from panbridge.providers.uc.qr_backend import UcQrBackend
+
+    fake = _FakeUcClient()
+    monkeypatch.setattr(uc_mod.httpx, "AsyncClient", lambda *a, **kw: fake)
+
+    backend = UcQrBackend()
+    ticket = await backend.start()
+    assert ticket.state["token"] == "uc-token"
+    assert ticket.qr_url.startswith("https://su.uc.cn/")
+
+    # 未扫码 → waiting
+    assert (await backend.check(ticket)).status == "waiting"
+
+    # 扫码成功 → success，暂存 service_ticket
+    fake.service_ticket = "uc-service-ticket"
+    status = await backend.check(ticket)
+    assert status.status == "success"
+    assert ticket.state["service_ticket"] == "uc-service-ticket"
+
+    # finish：换 Cookie，返回含 __puus 的 cookie 字符串
+    cred = await backend.finish(ticket)
+    assert "__puus=puus-value" in cred.credential
+    assert "__kps=kps-value" in cred.credential
+    assert cred.label == "uc-qr"
+
+
+@pytest.mark.asyncio
+async def test_uc_backend_finish_before_confirm(monkeypatch):
+    import panbridge.providers.uc.qr_backend as uc_mod
+
+    from panbridge.domain.errors import DomainError, ErrorCode
+
+    from panbridge.providers.uc.qr_backend import UcQrBackend
+
+    fake = _FakeUcClient()
+    monkeypatch.setattr(uc_mod.httpx, "AsyncClient", lambda *a, **kw: fake)
+
+    backend = UcQrBackend()
+    ticket = await backend.start()
+    with pytest.raises(DomainError) as exc:
+        await backend.finish(ticket)
+    assert exc.value.code == ErrorCode.ACTION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_uc_backend_expired_status(monkeypatch):
+    """UC 扫码状态 50004002 映射为 expired。"""
+    import panbridge.providers.uc.qr_backend as uc_mod
+
+    from panbridge.providers.uc.qr_backend import UcQrBackend
+
+    class _ExpiredClient(_FakeUcClient):
+        async def post(self, url, data=None, headers=None):
+            if "getServiceTicketByQrcodeToken" in url:
+                return _FakeUcResponse({"status": 50004002, "message": "expired"})
+            return await super().post(url, data=data, headers=headers)
+
+    fake = _ExpiredClient()
+    monkeypatch.setattr(uc_mod.httpx, "AsyncClient", lambda *a, **kw: fake)
+
+    backend = UcQrBackend()
+    ticket = await backend.start()
+    assert (await backend.check(ticket)).status == "expired"

@@ -27,7 +27,7 @@
 | `pikpak` | PikPak | ✅ | ✅ | ❌(未验证) | ❌ | ✅ | ❌ | 无需登录(分享) | ⚠️ 协议+Mock（需住宅IP） |
 | `cloud189` | 天翼云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 账号密码/Cookie | ⚠️ 协议+Mock |
 | `caiyun` | 移动云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | 手工 Authorization | ⚠️ 协议+Mock |
-| `uc` | UC 网盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | 手工 Cookie | ⚠️ 协议+Mock |
+| `uc` | UC 网盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | **扫码登录**（Cookie） | ⚠️ 扫码端点真实调通 |
 | `xunlei` | 迅雷云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | 手工 refresh_token | ⚠️ 协议+Mock |
 | `weiyun` | 腾讯微云 | ✅ | ✅ | 🟡 | ✅ | ❌ | ❌ | 手工 skey Cookie | ⚠️ 协议+Mock |
 | `guangya` | 光鸭云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 access_token | ⚠️ 协议+Mock |
@@ -35,7 +35,7 @@
 | `mock` | Mock | - | - | - | - | - | - | - | 测试用 |
 
 > **认证方式重要说明（如实）**：
-> - **已实现扫码登录的平台（4 个）**：
+> - **已实现扫码登录的平台（5 个）**：
 >   - `quark`：`panbridge auth login --provider quark`，复用 quarkpan 二维码协议，
 >     service_ticket 换 Cookie，加密入库。
 >   - `aliyun`：`panbridge auth login --provider aliyun`，复用 aligo 登录端点
@@ -47,13 +47,25 @@
 >   - `123`：`panbridge auth login --provider 123`，调用 login.123pan.com
 >     二维码协议（qr-code/generate → qr-code/result 轮询 loginStatus → token），
 >     token 加密入库（30 天有效期）。
->   - 四者均支持：二维码过期、主动取消、重复扫码（幂等轮询）、凭据失效后重新
+>   - `uc`：`panbridge auth login --provider uc`，与夸克同源的 CAS 扫码协议
+>     （getTokenForQrcodeLogin → getServiceTicketByQrcodeToken 轮询 →
+>     drive.uc.cn/account/info 换 Cookie），Cookie 加密入库。
+>   - 五者均支持：二维码过期、主动取消、重复扫码（幂等轮询）、凭据失效后重新
 >     登录。**扫码状态流转已通过协议模拟测试验证，但真实扫码留待用户验收**。
-> - 其余平台（百度/天翼/移动/UC/迅雷/微云/光鸭/悟空）未见稳定公开的官方
->   OAuth 或扫码端点，保留**手工凭据导入**路径：
->   `panbridge auth import --provider <平台> --credential "<Cookie/token>"`。
+> - 其余平台（百度/天翼/移动/迅雷/微云/光鸭/悟空）扫码登录情况（如实）：
+>   - `baidu`：网页版 `/api/qrcode/create` 端点已废弃（返回 404），开放平台
+>     OAuth 设备码需自行注册应用并审核，暂无法无依赖扫码，保留手工 BDUSS 导入。
+>   - `cloud189`：扫码接口 `qrcodeLoginResult.action` 现返回 `QrCodeRollLoginFail`
+>     （服务端拒绝，协议疑似失效），账号密码登录（SDK 已支持）更可靠。
+>   - `weiyun`：微信/QQ 扫码走腾讯 ptlogin 协议（需逆向 + 官方 appid），
+>     QQ 登录 Cookie 仅保活 48 小时，暂保留手工 skey Cookie 导入。
+>   - `caiyun`/`xunlei`：移动云盘 token 5 分钟失效需续票签名、迅雷需图形
+>     验证码签名，均无稳定公开扫码端点，保留手工凭据导入。
+>   - `guangya`/`wukong`：未见公开扫码/OAuth 端点，保留手工导入。
+>   - 以上平台统一保留手工凭据导入路径：
+>     `panbridge auth import --provider <平台> --credential "<Cookie/token>"`。
 > - 不要把「需要手工 Cookie/token」的平台描述为「扫码即可使用」——
->   这是不准确的。当前扫码登录能力边界：**quark/aliyun/115/123 已实现（协议），
+>   这是不准确的。当前扫码登录能力边界：**quark/aliyun/115/123/uc 已实现（协议），
 >   其余平台需手工凭据导入**。
 
 > 注：UC / 迅雷 / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
