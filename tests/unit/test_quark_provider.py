@@ -166,10 +166,21 @@ def test_cipher_rejects_empty_secret():
 class _FakeQuarkClient:
     """mock QuarkClient：验证 resolve/get_download_info 的解析逻辑。"""
 
-    def __init__(self, files: list[dict], file_info: dict, download_url: str):
+    def __init__(
+        self,
+        files: list[dict],
+        file_info: dict,
+        download_url: str,
+        *,
+        download_item: dict | None = None,
+        jar_cookies: list[tuple[str, str]] | None = None,
+    ):
         self._files = files
         self._file_info = file_info
         self._download_url = download_url
+        self._download_item = download_item
+        self._jar_cookies = jar_cookies or []
+        self.api_client = _FakeDownloadApiClient(self)
 
     def list_files(self, folder_id: str = "0", **kwargs):
         return {"data": {"list": self._files}}
@@ -177,8 +188,45 @@ class _FakeQuarkClient:
     def get_file_info(self, file_id: str):
         return self._file_info
 
-    def get_download_url(self, file_id: str):
-        return self._download_url
+
+class _FakeCookie:
+    def __init__(self, name: str, value: str):
+        self.name = name
+        self.value = value
+        self.domain = ".quark.cn"
+
+
+class _FakeJar:
+    def __init__(self, cookies: list[tuple[str, str]]):
+        self._cookies = [_FakeCookie(n, v) for n, v in cookies]
+
+    def __iter__(self):
+        return iter(self._cookies)
+
+
+class _FakeDownloadApiClient:
+    """mock api_client：提供 post(file/download) 与 cookies.jar。"""
+
+    def __init__(self, parent: _FakeQuarkClient):
+        self._parent = parent
+        self.cookies = ""
+        self._client = type(
+            "_C",
+            (),
+            {"cookies": type("_J", (), {"jar": _FakeJar(parent._jar_cookies)})()},
+        )()
+
+    def post(
+        self, url: str, *, json_data=None, params=None, base_url=None, headers=None
+    ):
+        item = self._parent._download_item
+        if item is None:
+            item = {
+                "download_url": self._parent._download_url,
+                "file_name": self._parent._file_info.get("file_name"),
+                "size": self._parent._file_info.get("size"),
+            }
+        return {"data": [item]}
 
 
 @pytest.mark.asyncio
@@ -206,12 +254,18 @@ async def test_resolve_saved_file_ids_converts_dict(quark, cipher, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_download_info_reads_file_info_name(quark, cipher, monkeypatch):
-    """get_file_info 返回单个 dict，直接取 file_name。"""
+    """file/download 返回的 item 里的 file_name 被正确取出。"""
     provider = QuarkProvider(cipher=cipher)
     fake = _FakeQuarkClient(
         files=[],
         file_info={"fid": "new1", "file_name": "real-name.bin"},
         download_url="https://download.example.com/x",
+        download_item={
+            "download_url": "https://download.example.com/x",
+            "file_name": "real-name.bin",
+            "size": 12345,
+        },
+        jar_cookies=[("__puus", "abc"), ("__kps", "def")],
     )
     acct = Account(
         id="a",
@@ -223,10 +277,36 @@ async def test_get_download_info_reads_file_info_name(quark, cipher, monkeypatch
     info = await provider.get_download_info(acct, "new1")
     assert info["url"] == "https://download.example.com/x"
     assert info["name"] == "real-name.bin"
-    # 下载 headers 应包含 Referer，且不含 Cookie
+    assert info["size"] == 12345
+    # 下载 headers 应包含 Referer 与客户端 UA，且携带从 jar 提取的鉴权 Cookie
     assert "headers" in info
     assert info["headers"]["Referer"] == "https://pan.quark.cn/"
-    assert "Cookie" not in info["headers"]
+    assert "quark-cloud-drive" in info["headers"]["User-Agent"]
+    assert "Cookie" in info["headers"]
+    assert "__puus=abc" in info["headers"]["Cookie"]
+    assert "__kps=def" in info["headers"]["Cookie"]
+
+
+@pytest.mark.asyncio
+async def test_get_download_info_empty_url_raises(quark, cipher, monkeypatch):
+    """file/download 返回空 download_url 时抛 DOWNLOAD_FAILED。"""
+    provider = QuarkProvider(cipher=cipher)
+    fake = _FakeQuarkClient(
+        files=[],
+        file_info={},
+        download_url="",
+        download_item={"download_url": "", "file_name": None, "size": None},
+    )
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    monkeypatch.setattr(provider, "_client_for", lambda a: fake)
+    with pytest.raises(DomainError) as exc:
+        await provider.get_download_info(acct, "new1")
+    assert exc.value.code == ErrorCode.DOWNLOAD_FAILED
 
 
 class _CreateFolderClient:

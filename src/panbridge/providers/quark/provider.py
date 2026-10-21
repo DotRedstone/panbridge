@@ -46,6 +46,15 @@ except ImportError:  # pragma: no cover
     QuarkAPIError = Exception  # type: ignore
     AuthenticationError = Exception  # type: ignore
 
+# 夸克桌面客户端 UA。夸克对 ``file/download`` 接口校验 UA：
+# 用普通浏览器 UA 会被判定为非客户端，大文件返回 ``23018 size limit``，
+# 即使是 SUPER_VIP 也不例外。必须用客户端 UA 才能拿到大文件直链。
+QUARK_CLIENT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) quark-cloud-drive/2.5.56 "
+    "Chrome/100.0.4896.160 Electron/18.3.5.12 Safari/537.36 "
+    "Channel/pckk_other_ch"
+)
+
 
 class QuarkProvider(ShareProvider):
     name = "quark"
@@ -513,11 +522,54 @@ class QuarkProvider(ShareProvider):
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
+        """获取下载直链。
+
+        关键：夸克的 ``file/download`` 接口会校验 User-Agent——用普通浏览器
+        UA（quark_client 默认值）会被判定为「非客户端」，大文件直接返回
+        ``23018 download file size limit``（即使 SUPER_VIP 也不例外）。必须
+        用夸克桌面客户端 UA 才能拿到大文件直链。故此处不调用
+        ``client.get_download_url``（其 UA 错误），而自行构造请求。
+        """
         client = self._client_for(account)
-        try:
-            url = await self._run(
-                client, lambda: client.get_download_url(file_id)
+
+        def _fetch():
+            from quark_client.config import Config
+
+            resp = client.api_client.post(
+                "file/download",
+                json_data={"fids": [file_id]},
+                params={
+                    "pr": "ucpro",
+                    "fr": "pc",
+                    "sys": "win32",
+                    "ve": "2.5.56",
+                    "ut": "",
+                    "guid": "",
+                },
+                base_url=Config.BASE_URL,
+                headers={"user-agent": QUARK_CLIENT_UA},
             )
+            data = resp.get("data") if isinstance(resp, dict) else None
+            if not data or not isinstance(data, list) or not data:
+                return None, None, None, None
+            item = data[0]
+            url = item.get("download_url")
+            name = item.get("file_name") or f"{file_id}.bin"
+            size = item.get("size")
+            # 关键：下载直链校验 __puus 等鉴权 Cookie，而这些 Cookie 是
+            # file/download 请求时服务端 Set-Cookie 下发的，累积在共享
+            # session 的 cookie jar 里（原始 cookies 字符串只有 _UP_ 风控
+            # Cookie，缺 __puus，会导致下载 412）。故从 jar 提取。
+            jar = client.api_client._client.cookies.jar  # noqa: SLF001
+            cookie = "; ".join(
+                f"{c.name}={c.value}"
+                for c in jar
+                if c.domain and "quark.cn" in c.domain
+            )
+            return url, name, size, cookie or None
+
+        try:
+            url, name, size, cookie = await self._run(client, _fetch)
         except Exception as exc:  # noqa: BLE001
             raise self._map_quark_error(exc) from exc
 
@@ -527,34 +579,23 @@ class QuarkProvider(ShareProvider):
                 "quark returned empty download url",
                 retryable=True,
             )
-        # 尝试获取文件名（可选，失败不影响下载）。
-        # QuarkPan 的 get_file_info 返回单个文件 dict（含 file_name），
-        # 而非 {"data": {"list": [...]}} 结构。
-        name = f"{file_id}.bin"
-        try:
-            info = await self._run(
-                client, lambda: client.get_file_info(file_id)
-            )
-            if isinstance(info, dict) and info.get("file_name"):
-                name = info["file_name"]
-        except Exception:  # noqa: BLE001
-            pass
+
+        # 夸克 CDN 下载直链要求携带账号 Cookie（access-control-allow-
+        # credentials: true，缺失返回 412 Precondition Failed）。下载器
+        # 在跨域跳转时会剥离 Cookie，故此处携带不会泄漏给第三方 CDN。
+        headers = {
+            "Referer": "https://pan.quark.cn/",
+            "User-Agent": QUARK_CLIENT_UA,
+        }
+        if cookie:
+            headers["Cookie"] = cookie
 
         return {
             "url": url,
             "name": name,
-            "size": None,
+            "size": size,
             "checksum": None,
-            # 夸克 CDN 下载可能校验 Referer（QuarkPan 自带下载也带此头）。
-            # 注意：不含 Cookie——下载 URL 已带签名，且凭据不得外泄。
-            "headers": {
-                "Referer": "https://pan.quark.cn/",
-                "User-Agent": (
-                    "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/139.0.0.0 Mobile Safari/537.36"
-                ),
-            },
+            "headers": headers,
         }
 
     # ---- 解析辅助 ----
