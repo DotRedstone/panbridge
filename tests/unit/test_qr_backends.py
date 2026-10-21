@@ -60,7 +60,7 @@ async def test_quark_backend_flow(monkeypatch):
     assert ticket.state["service_ticket"] == "fake-service-ticket"
 
     # finish：拦截换 Cookie 网络请求
-    async def _fake_exchange(ticket_str):
+    async def _fake_exchange(ticket, service_ticket):
         return "__kps=abc; __uid=def"
 
     monkeypatch.setattr(backend, "_exchange_cookie", _fake_exchange)

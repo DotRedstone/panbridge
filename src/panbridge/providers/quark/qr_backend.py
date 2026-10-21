@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import logging
 
-import httpx
-
 from panbridge.application.auth import (
     QrAuthBackend,
     QrCredential,
@@ -94,7 +92,7 @@ class QuarkQrBackend(QrAuthBackend):
                 "quark qr login not yet confirmed; scan the qr code first",
                 retryable=False,
             )
-        cookie = await self._exchange_cookie(service_ticket)
+        cookie = await self._exchange_cookie(ticket, service_ticket)
         if not cookie:
             raise DomainError(
                 ErrorCode.ACCOUNT_EXPIRED,
@@ -103,26 +101,30 @@ class QuarkQrBackend(QrAuthBackend):
             )
         return QrCredential(credential=cookie, label="quark-qr")
 
-    async def _exchange_cookie(self, service_ticket: str) -> str:
-        """用 service_ticket 换登录 Cookie（不复用 QuarkPan 的文件写入逻辑）。
+    async def _exchange_cookie(
+        self, ticket: QrTicket, service_ticket: str
+    ) -> str:
+        """用 service_ticket 换登录 Cookie。
 
-        等价于 QuarkPan `_get_user_info_and_cookies` 的网络行为：
-        请求 `https://pan.quark.cn/account/info?st=<ticket>&lw=scan`，
-        响应的 Set-Cookie 会被写入独立 httpx client 的 cookie jar。
-        这里不写任何文件，只提取 quark.cn 域名的 Cookie 拼成字符串。
+        关键：必须复用 `start()`/`check()` 阶段持有的同一个
+        `login_mgr.client`（httpx.Client），因为夸克的登录 Cookie 是
+        分多步、跨 `uop.quark.cn` 与 `pan.quark.cn` 两个域名累积下发的：
+
+        - `get_qr_code`（uop.quark.cn/cas/ajax/getTokenForQrcodeLogin）
+        - `check_login_status`（uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken）
+        - `account/info?st=...&lw=scan`（pan.quark.cn，Set-Cookie 换鉴权 Cookie）
+
+        若改用独立 client，会丢失前面阶段下发的 Cookie（如 `__puus` 等
+        鉴权 Cookie），导致最终 Cookie 不完整、`validate_account` 判定失效。
+        这里沿用 QuarkPan `login()` 的做法：全程复用 `login_mgr.client`，
+        最后从该 client 的 cookie jar 提取 `quark.cn` 域 Cookie。
         """
-        async with httpx.AsyncClient(
-            timeout=30.0,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/139.0.0.0 Safari/537.36"
-                ),
-                "Accept": "application/json, text/plain, */*",
-            },
-        ) as client:
-            resp = await client.get(
+        import asyncio
+
+        login_mgr = ticket.state["login_mgr"]
+
+        def _exchange() -> str:
+            resp = login_mgr.client.get(
                 "https://pan.quark.cn/account/info",
                 params={"st": service_ticket, "lw": "scan"},
             )
@@ -131,9 +133,10 @@ class QuarkQrBackend(QrAuthBackend):
                     "exchange cookie got status %s", resp.status_code
                 )
                 return ""
-
             cookies: list[str] = []
-            for cookie in client.cookies.jar:
+            for cookie in login_mgr.client.cookies.jar:
                 if cookie.domain and "quark.cn" in cookie.domain:
                     cookies.append(f"{cookie.name}={cookie.value}")
             return "; ".join(cookies)
+
+        return await asyncio.to_thread(_exchange)
