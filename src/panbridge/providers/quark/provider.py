@@ -158,6 +158,14 @@ class QuarkProvider(ShareProvider):
                     "quark quota exceeded",
                     retryable=False,
                 )
+            # 夸克非会员账号对单文件直链下载有大小限制（23018），
+            # 属于账号权益/配额限制，而非系统错误。
+            if "size limit" in msg.lower() or "大小限制" in msg:
+                return DomainError(
+                    ErrorCode.QUOTA_EXCEEDED,
+                    "quark download size limit exceeded (membership required)",
+                    retryable=False,
+                )
             if "提取码" in msg or "密码" in msg or "passcode" in msg.lower():
                 return DomainError(
                     ErrorCode.INVALID_PASSWORD,
@@ -254,13 +262,8 @@ class QuarkProvider(ShareProvider):
             )
             result = await self._run(
                 client,
-                lambda: client.shares.save_shared_files(
-                    share_id=share_id,
-                    token=token,
-                    file_ids=file_ids,
-                    target_folder_id=destination or "0",
-                    save_all=False,
-                    wait_for_completion=True,
+                lambda: self._save_shared_files_impl(
+                    client, share_id, token, file_ids, destination or "0"
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -275,6 +278,80 @@ class QuarkProvider(ShareProvider):
             # 转存前的源文件 ID 不能直接用于下载，需查询转存后的新 ID。
             saved_file_ids=[],
             remote_task_id=str(task_id) if task_id else None,
+        )
+
+    @staticmethod
+    def _save_shared_files_impl(
+        client: Any,
+        share_id: str,
+        token: str,
+        file_ids: list[str],
+        target_folder_id: str,
+    ) -> dict[str, Any]:
+        """正确的夸克转存协议（绕过 quark_client 的缺陷）。
+
+        quark_client 的 `save_shared_files` 硬编码 `fid_token_list: []`，
+        而夸克现已强制 `check_fid_token=1`，要求 `fid_token_list` 与
+        `fid_list` 一一对应，否则返回 41020「token 个数异常」。
+
+        正确流程：
+        1. `sharepage/detail` 获取每个文件的 `share_fid_token`；
+        2. 按 `fid_list` 顺序构造等长的 `fid_token_list`；
+        3. `POST sharepage/save` 携带正确的 `fid_token_list`。
+        """
+        from quark_client.config import Config
+
+        api = client.api_client
+        # 1. 拉取分享详情，拿到 fid -> share_fid_token 映射
+        detail = api.get(
+            "share/sharepage/detail",
+            params={
+                "pwd_id": share_id,
+                "stoken": token,
+                "pdir_fid": "0",
+                "force": 0,
+                "_page": 1,
+                "_size": 200,
+                "_fetch_banner": 1,
+                "_fetch_share": 1,
+                "_fetch_total": 1,
+                "_sort": "file_type:asc,file_name:asc",
+            },
+            base_url=Config.SHARE_BASE_URL,
+        )
+        token_by_fid: dict[str, str] = {}
+        items = (
+            detail.get("data", {}).get("list", [])
+            if isinstance(detail, dict)
+            else []
+        )
+        for item in items:
+            if isinstance(item, dict) and item.get("fid"):
+                ft = item.get("share_fid_token")
+                if ft:
+                    token_by_fid[item["fid"]] = str(ft)
+
+        # 2. 按 fid_list 顺序构造 fid_token_list（缺失则回退空串占位）
+        fid_token_list: list[str] = [
+            token_by_fid.get(fid, "") for fid in file_ids
+        ]
+
+        # 3. 转存
+        data = {
+            "fid_list": file_ids,
+            "fid_token_list": fid_token_list,
+            "to_pdir_fid": target_folder_id,
+            "pwd_id": share_id,
+            "stoken": token,
+            "pdir_fid": "0",
+            "pdir_save_all": False,
+            "exclude_fids": [],
+            "scene": "link",
+        }
+        return api.post(
+            "share/sharepage/save",
+            json_data=data,
+            base_url=Config.SHARE_BASE_URL,
         )
 
     async def resolve_saved_file_ids(
@@ -323,25 +400,65 @@ class QuarkProvider(ShareProvider):
     async def await_transfer(
         self, account: Account, remote_task_id: str
     ) -> TransferResult:
-        """等待夸克异步转存完成，返回按文件名解析出的新 fid 映射。
+        """等待夸克异步转存完成，返回「源 fid → 新 fid」显式映射。
 
-        夸克的 save_shared_files 已用 wait_for_completion=True，多数情况下
-        任务已同步完成；此处仍提供完成确认语义：列出目标目录确认文件已
-        出现。由于夸克不提供「源 fid → 新 fid」的显式映射，只能按文件名
-        在唯一目标目录内解析，作为映射兜底（不伪造顺序对应）。
+        夸克转存是异步任务：`sharepage/save` 只返回 task_id，文件稍后
+        才落到目标目录。这里轮询 `task` 接口直到 status=2（完成），
+        并从响应的 `save_as_top_fids` 提取转存后的新 fid。
+
+        注意：`save_as_top_fids` 是「顶级文件」的新 fid，顺序与转存
+        入参的顶级文件一致（子目录文件不在此列表）。对于扁平转存
+        （无子目录，本 Adapter 的常见场景）它即完整映射；含子目录时
+        Worker 走 create_folder 分支逐目录转存，每个目录单独确认，
+        同样适用。因此这里直接返回顺序映射，供 Worker 严格绑定。
         """
-        # 无法从 remote_task_id 反查目标目录，故以 root("0") 为默认；
-        # 实际转存时 Worker 传入独立目录 destination，此方法仅在
-        # 无法拿到显式映射时被调用，作为「任务已可确认」的信号。
         client = self._client_for(account)
+
+        def _poll() -> list[str]:
+            import time
+
+            from quark_client.config import Config
+
+            api = client.api_client
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                resp = api.get(
+                    "task",
+                    params={"task_id": remote_task_id, "retry_index": 0},
+                    base_url=Config.BASE_URL,
+                )
+                if not isinstance(resp, dict):
+                    break
+                data = resp.get("data", {})
+                status = data.get("status") if isinstance(data, dict) else None
+                if status == 2:  # 完成
+                    save_as = data.get("save_as", {}) or {}
+                    top_fids = save_as.get("save_as_top_fids") or []
+                    return [str(f) for f in top_fids]
+                if status == 3:  # 失败
+                    raise self._map_quark_error(
+                        QuarkAPIError(
+                            f"quark transfer task failed: {data.get('message', '')}"
+                        )
+                    )
+                time.sleep(1.0)
+            return []
+
         try:
-            await self._run(client, lambda: client.list_files("0"))
+            top_fids = await self._run(client, _poll)
         except Exception as exc:  # noqa: BLE001
             raise self._map_quark_error(exc) from exc
 
-        # 不在此处伪造「源→新」映射：夸克无法从任务 ID 反查对应关系，
-        # 仅返回空的显式映射，交由 Worker 走 resolve_saved_file_ids 兜底。
-        return TransferResult(saved=[], remote_task_id=remote_task_id)
+        if not top_fids:
+            # 无法从 task 反查显式映射，返回空，交由 Worker 走
+            # resolve_saved_file_ids（按文件名）兜底。
+            return TransferResult(saved=[], remote_task_id=remote_task_id)
+
+        # save_as_top_fids 的顺序与转存入参 fid_list（顶级文件）一致，
+        # 以 saved_file_ids 顺序列表返回，供 Worker 按序绑定到 entries。
+        return TransferResult(
+            saved_file_ids=top_fids, remote_task_id=remote_task_id
+        )
 
     async def create_folder(
         self, account: Account, name: str, parent_id: str = "0"

@@ -110,6 +110,14 @@ def test_map_quark_password_error(quark):
     assert exc.code == ErrorCode.INVALID_PASSWORD
 
 
+def test_map_quark_download_size_limit(quark):
+    """夸克非会员单文件直链下载大小限制（23018）应映射为配额超限。"""
+    from quark_client.exceptions import APIError
+
+    exc = quark._map_quark_error(APIError("download file size limit[fid]"))
+    assert exc.code == ErrorCode.QUOTA_EXCEEDED
+
+
 def test_missing_credential_raises(quark):
     acct = Account(id="a", provider="quark", label="x", encrypted_credential="")
     with pytest.raises(DomainError) as exc:
@@ -363,3 +371,64 @@ async def test_validate_account_exception_is_invalid(quark, cipher, monkeypatch)
 
     monkeypatch.setattr(provider, "_client_for", lambda a: _Boom())
     assert await provider.validate_account(acct) is False
+
+
+class _FakeApiClient:
+    """mock api_client：记录 get/post 调用，返回预设响应。"""
+
+    def __init__(self, detail_list: list[dict], save_result: dict):
+        self._detail_list = detail_list
+        self._save_result = save_result
+        self.get_calls: list[dict] = []
+        self.post_calls: list[dict] = []
+
+    def get(self, url, params=None, base_url=None, **kwargs):
+        self.get_calls.append({"url": url, "params": params, "base_url": base_url})
+        return {"status": 200, "data": {"list": self._detail_list}}
+
+    def post(self, url, json_data=None, base_url=None, **kwargs):
+        self.post_calls.append(
+            {"url": url, "json_data": json_data, "base_url": base_url}
+        )
+        return self._save_result
+
+
+class _FakeShareClient:
+    def __init__(self, api_client):
+        self.api_client = api_client
+
+    def get_share_token(self, share_id, password=None):
+        return "stoken-abc"
+
+
+def test_save_shared_files_impl_builds_fid_token_list(quark):
+    """转存必须携带与 fid_list 一一对应的 share_fid_token 列表。"""
+    detail_list = [
+        {"fid": "f1", "share_fid_token": "tok1"},
+        {"fid": "f2", "share_fid_token": "tok2"},
+    ]
+    api = _FakeApiClient(detail_list, {"status": 200, "data": {"task_id": "t1"}})
+    client = _FakeShareClient(api)
+
+    result = quark._save_shared_files_impl(
+        client, "share-1", "stoken-abc", ["f1", "f2"], "0"
+    )
+
+    # 验证 save 请求的 fid_token_list 与 fid_list 顺序一致
+    save_call = api.post_calls[-1]
+    assert save_call["url"] == "share/sharepage/save"
+    assert save_call["json_data"]["fid_list"] == ["f1", "f2"]
+    assert save_call["json_data"]["fid_token_list"] == ["tok1", "tok2"]
+    assert result["data"]["task_id"] == "t1"
+
+
+def test_save_shared_files_impl_missing_token_uses_placeholder(quark):
+    """某文件缺失 share_fid_token 时以空串占位，保持列表等长。"""
+    detail_list = [{"fid": "f1", "share_fid_token": "tok1"}]
+    api = _FakeApiClient(detail_list, {"status": 200, "data": {"task_id": "t1"}})
+    client = _FakeShareClient(api)
+
+    quark._save_shared_files_impl(client, "share-1", "st", ["f1", "f2"], "0")
+
+    save_call = api.post_calls[-1]
+    assert save_call["json_data"]["fid_token_list"] == ["tok1", ""]
