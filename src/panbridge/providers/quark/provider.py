@@ -212,13 +212,27 @@ class QuarkProvider(ShareProvider):
 
         注意：QuarkPan 的 `client.is_logged_in()` 检查的是本地
         `cookies.json` 文件，与账号存储的 Cookie 无关，故不能用它。
-        这里用账号 Cookie 实际调用 `get_storage_info`（capacity 接口），
-        能成功返回即说明 Cookie 有效。
+        这里用账号 Cookie 实际调用 `list_files`（根目录列表接口），
+        能成功返回（status 200 且无 error）即说明 Cookie 有效。
+
+        不能再用 `get_storage_info`：它走 `/1/clouddrive/capacity` 接口，
+        夸克改版后该接口已 404（返回 `{'error': ...}`），会导致有效
+        凭据被误判为失效。`list_files` 是稳定且真正需要鉴权的接口。
         """
         try:
             client = self._client_for(account)
-            info = await self._run(client, client.get_storage_info)
-            return isinstance(info, dict) and "error" not in info
+            result = await self._run(client, client.list_files, "0")
+            if not isinstance(result, dict):
+                return False
+            if "error" in result:
+                return False
+            # list_files 成功返回 status=200 / code=0；凭据失效时返回
+            # 非 200 或含 error。以 status 字段为准，缺失时退化为
+            # 无 error 且含 data 即视为有效。
+            status = result.get("status")
+            if status is not None:
+                return status == 200
+            return "data" in result
         except DomainError:
             raise
         except Exception:  # noqa: BLE001

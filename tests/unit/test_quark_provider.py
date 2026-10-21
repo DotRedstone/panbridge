@@ -285,3 +285,81 @@ async def test_resolve_saved_file_ids_ambiguous_raises(quark, cipher, monkeypatc
         await provider.resolve_saved_file_ids(acct, "0", ["a.txt"])
     assert exc.value.code == ErrorCode.INTERNAL_ERROR
     assert "ambiguous" in exc.value.message
+
+
+class _ValidateClient:
+    """mock QuarkClient：按预设返回值模拟 list_files 结果。"""
+
+    def __init__(self, result):
+        self._result = result
+
+    def list_files(self, folder_id: str = "0", **kwargs):
+        return self._result
+
+
+@pytest.mark.asyncio
+async def test_validate_account_list_files_ok(quark, cipher, monkeypatch):
+    """list_files 返回 status=200 时，Cookie 判定有效。"""
+    provider = QuarkProvider(cipher=cipher)
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    ok = {"status": 200, "code": 0, "data": {"list": []}}
+    monkeypatch.setattr(provider, "_client_for", lambda a: _ValidateClient(ok))
+    assert await provider.validate_account(acct) is True
+
+
+@pytest.mark.asyncio
+async def test_validate_account_error_result_is_invalid(quark, cipher, monkeypatch):
+    """list_files 返回含 error 的 dict 时，判定失效（如 capacity 接口 404）。"""
+    provider = QuarkProvider(cipher=cipher)
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    err = {"error": "HTTP错误: 404"}
+    monkeypatch.setattr(provider, "_client_for", lambda a: _ValidateClient(err))
+    assert await provider.validate_account(acct) is False
+
+
+@pytest.mark.asyncio
+async def test_validate_account_non_200_status_is_invalid(
+    quark, cipher, monkeypatch
+):
+    """list_files 返回 status 非 200 时，判定失效。"""
+    provider = QuarkProvider(cipher=cipher)
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+    not_ok = {"status": 401, "message": "unauthorized"}
+    monkeypatch.setattr(
+        provider, "_client_for", lambda a: _ValidateClient(not_ok)
+    )
+    assert await provider.validate_account(acct) is False
+
+
+@pytest.mark.asyncio
+async def test_validate_account_exception_is_invalid(quark, cipher, monkeypatch):
+    """list_files 抛异常时，判定失效而非抛出。"""
+    provider = QuarkProvider(cipher=cipher)
+    acct = Account(
+        id="a",
+        provider="quark",
+        label="x",
+        encrypted_credential=cipher.encrypt("cookie"),
+    )
+
+    class _Boom:
+        def list_files(self, folder_id: str = "0", **kwargs):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(provider, "_client_for", lambda a: _Boom())
+    assert await provider.validate_account(acct) is False
