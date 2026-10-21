@@ -86,8 +86,9 @@ class ShareProvider(ABC):
         password: str | None,
         file_id: str,
         file: ShareFile | None = None,
+        account: Account | None = None,
     ) -> dict[str, Any]:
-        """解析分享中单个文件的下载信息（匿名，无需登录）。
+        """解析分享中单个文件的下载信息。
 
         与 `get_download_info` 的区别：后者下载「账号网盘中的文件」
         （需要真实 fid 与登录态），本方法下载「分享中的文件」，
@@ -102,6 +103,9 @@ class ShareProvider(ABC):
           避免 Provider 重复递归扫描整棵分享目录来重新定位文件。
           Provider 应优先复用 `file.raw`，仅在 `file` 缺失或元数据不足时
           才回退到重新解析。
+        - `account`：可选，登录账号。部分平台（如 123 云盘）匿名分享下载
+          受流量/登录限制，提供账号后可走登录态直链下载（免转存、减半流量
+          消耗）。默认 None 表示匿名下载。
 
         返回字典应包含 `url`（必填）与可选 `name`/`size`/`checksum`/
         `headers`。默认抛 UNSUPPORTED_OPERATION —— 表示该平台不支持

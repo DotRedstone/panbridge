@@ -57,6 +57,26 @@ def test_extract_123pan_with_dash_password():
     assert result.password == "1234"
 
 
+def test_extract_123pan_personalized_domain_with_pwd():
+    """个性化域名新格式：<uid>.share.123pan.cn/<prefix>/<shortKey>?pwd=xxx。"""
+    result = extract_share(
+        "https://1822747000.share.123pan.cn/123pan/k73Mjv-3vrnA?pwd=IlUH#"
+    )
+    assert result.provider == "123"
+    # 连字符是短码本身一部分，不是提取码分隔符。
+    assert result.share_id == "k73Mjv-3vrnA"
+    # 提取码来自 ?pwd= 参数，而非 URL 尾部连字符。
+    assert result.password == "IlUH"
+
+
+def test_extract_123pan_dash_locator_not_password():
+    """旧格式 /s/A6cA-I24Jh：连字符后 5 位是分享定位符，不是提取码。"""
+    result = extract_share("https://www.123pan.com/s/A6cA-I24Jh")
+    assert result.provider == "123"
+    assert result.share_id == "A6cA-I24Jh"
+    assert result.password is None
+
+
 def test_extract_aliyun_share():
     result = extract_share("https://www.alipan.com/s/abc123")
     assert result.provider == "aliyun"

@@ -37,6 +37,7 @@ _PLATFORM_PATTERNS: dict[str, tuple[set[str], Pattern[str]]] = {
         re.compile(
             r"https?://(?:www\.)?(?:123pan\.com|123684\.com|123685\.com|"
             r"123912\.com|123pan\.cn|123592\.com)/s/[A-Za-z0-9_-]+"
+            r"|https?://[A-Za-z0-9]+\.share\.123pan\.cn/[A-Za-z0-9]+/[A-Za-z0-9_-]+"
         ),
     ),
     "aliyun": (
@@ -217,6 +218,16 @@ def _share_id_from_url(url: str) -> str:
             return m.group(1)
         raise DomainError(ErrorCode.INVALID_SHARE, "malformed cloud189 share URL")
 
+    # 123 网盘个性化域名分享：<uid>.share.123pan.cn/<prefix>/<shareKey>
+    # 形如 https://1822747000.share.123pan.cn/123pan/k73Mjv-3vrnA，
+    # share_id 为路径最后一段（完整短码，连字符是短码一部分）。
+    if ".share.123pan.cn" in url:
+        path = urlparse(url).path
+        parts = [p for p in path.split("/") if p]
+        if parts:
+            return parts[-1]
+        raise DomainError(ErrorCode.INVALID_SHARE, "malformed 123 share URL")
+
     path = urlparse(url).path
     parts = [p for p in path.split("/") if p]
     if len(parts) >= 2 and parts[-2] in ("s", "share"):
@@ -235,17 +246,21 @@ def _extract_password(text: str, url: str, provider: str) -> str | None:
     - 百度网盘 `?pwd=xxxx`。
     - 123 网盘 URL 尾部 `-xxxx`（share_id 与密码用连字符拼接）。
     """
-    # 123 网盘：/s/<share_id>-<password> 形式，密码跟在连字符后（1-4 位）。
-    # 超过 4 位（如 A6cA-I24Jh 的 I24Jh）不是提取码，是分享定位符。
+    # 123 网盘：优先从 `?pwd=` 参数取提取码（个性化域名新格式明确给出）。
+    # 只有旧格式 `/s/<share_id>-<password>` 才从 URL 尾部连字符拆分，
+    # 且连字符后 1-4 位才是提取码；超过 4 位（如 A6cA-I24Jh 的 I24Jh）
+    # 是分享定位符，不是提取码。
     if provider == "123":
+        pwd_match = re.search(r"[?&]pwd=([A-Za-z0-9]{1,8})", url)
+        if pwd_match:
+            return pwd_match.group(1)
         path = urlparse(url).path
         parts = [p for p in path.split("/") if p]
-        if parts:
+        if parts and "-" in parts[-1]:
             raw = parts[-1]
-            if "-" in raw:
-                left, right = raw.rsplit("-", 1)
-                if 1 <= len(right) <= 4 and left:
-                    return right
+            left, right = raw.rsplit("-", 1)
+            if 1 <= len(right) <= 4 and left:
+                return right
 
     for pattern, group_idx in _PASSWORD_PATTERNS:
         m = pattern.search(text)

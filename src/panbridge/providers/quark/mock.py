@@ -149,6 +149,7 @@ class MockProvider(ShareProvider):
         password: str | None,
         file_id: str,
         file: ShareFile | None = None,
+        account: Account | None = None,
     ) -> dict[str, Any]:
         """模拟匿名分享直链下载（无需账号）。"""
         if file_id.startswith("downloadfail"):

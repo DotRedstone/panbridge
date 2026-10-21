@@ -234,8 +234,15 @@ class Pan123Provider(ShareProvider):
         """匿名获取分享文件列表（分页）。
 
         流程：完整短码 → UserID → 个性化域名 /api/share/get。
-        share_key 为完整短码（含 `-提取码`），password 为提取码（可选，
-        仅当短码尾部为 1-4 位提取码时传入；否则为空）。
+
+        参数约定（2026-10 实测）：
+        - `share_key` 为**完整短码**，可能本身含连字符（如 `k73Mjv-3vrnA`，
+          连字符是短码一部分，非提取码分隔符）。
+        - `password` 为独立提取码（如 `IlUH`），通过 `SharePwd` 参数传递，
+          不与短码拼接。
+        - 兼容旧格式：当短码不含连字符且提供了 password 时，需拼接为
+          `<share_key>-<password>` 作为 shareKey 查询参数（`/gsb/s/share-key`
+          与文件列表接口均需完整短码）。
         """
         full_key = share_key
         if password and "-" not in share_key:
@@ -387,13 +394,19 @@ class Pan123Provider(ShareProvider):
         password: str | None,
         file_id: str,
         file: ShareFile | None = None,
+        account: Account | None = None,
     ) -> dict[str, Any]:
-        """解析分享中单个文件的直链（匿名，无需登录）。
+        """解析分享中单个文件的下载直链。
+
+        123 云盘下载策略（2026-10 实测）：
+        - 匿名 `/share/download/info` 仅对「≤100MB 且分享者开启免登录流量包」
+          的文件生效，否则返回 5112「需要注册登录或付费后下载」。
+        - 登录后（`account` 提供）走 `/file/download_info`：用文件 Etag
+          （MD5）+ S3KeyFlag（`UID-0`）直接取直链，**无需转存**，且带
+          `platform=android` 客户端标识，模拟客户端下载以争取减半流量消耗。
 
         优先复用 `file.raw`（inspect/目录遍历时已解析出的 etag/s3keyFlag/
         size/fileId）直接解析直链，避免重复递归扫描整棵分享目录。
-
-        仅当 `file` 缺失时才回退到递归查找（兼容旧调用方）。
         """
         full_key = share_id
         if password and "-" not in share_id:
@@ -416,6 +429,17 @@ class Pan123Provider(ShareProvider):
                 "123 share directory download is not supported",
             )
 
+        # 登录态优先：用 Etag + S3KeyFlag 直接取直链（免转存、减半消耗）。
+        if account is not None:
+            url = await self._authed_download_url(account, target)
+            return {
+                "url": url,
+                "name": target.name,
+                "size": target.size,
+                "checksum": target.raw.get("etag"),
+                "headers": {"referer": "https://www.123pan.cn/"},
+            }
+
         url = await self.resolve_share_download_url(
             full_key, password, target.raw
         )
@@ -427,23 +451,91 @@ class Pan123Provider(ShareProvider):
             "headers": {"referer": "https://www.123pan.cn/"},
         }
 
+    async def _authed_download_url(
+        self, account: Account, target: ShareFile
+    ) -> str:
+        """登录态取下载直链（模拟客户端，争取减半流量消耗）。
+
+        用分享解析出的 Etag（MD5）+ S3KeyFlag 调 `/file/download_info`，
+        无需先转存。请求带 `platform=android` 客户端标识。
+        """
+        token = self._decrypt_credential(account)
+        raw = target.raw or {}
+        etag = raw.get("etag")
+        s3key_flag = raw.get("s3keyFlag")
+        if not etag or not s3key_flag:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "123 share file missing Etag/S3KeyFlag; cannot download authed",
+                retryable=False,
+            )
+        body = {
+            "driveId": 0,
+            "etag": etag,
+            "fileId": int(raw.get("fileId") or 0),
+            "s3keyFlag": s3key_flag,
+            "size": raw.get("size") or target.size or 0,
+            "fileName": target.name,
+            "type": 0,
+        }
+        url = _signed_url(_AApi + "/file/download_info")
+        headers = {
+            **_HEADERS,
+            "authorization": f"Bearer {token}",
+            # 模拟客户端下载：platform=android，争取流量减半。
+            "platform": "android",
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=body, headers=headers)
+        if resp.status_code != 200:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                f"123 authed download info returned {resp.status_code}",
+                retryable=True,
+            )
+        data = resp.json()
+        if data.get("code") not in (0, 200):
+            raise self._map_error(data)
+        download_url = (data.get("data") or {}).get("DownloadURL", "")
+        if not download_url:
+            raise DomainError(
+                ErrorCode.DOWNLOAD_FAILED,
+                "123 returned empty authed download url",
+                retryable=True,
+            )
+        # DownloadURL 可能含 base64 编码的 params 参数，解码得到真实直链。
+        parsed = urlparse(download_url)
+        params = parse_qs(parsed.query).get("params")
+        if params:
+            try:
+                return base64.b64decode(params[0]).decode("utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+        return download_url
+
     async def get_download_info(
         self, account: Account, file_id: str
     ) -> dict[str, Any]:
         """获取账号网盘文件的下载直链（需登录）。
 
-        与匿名分享下载（get_share_download_info）分离：此处 file_id
-        为账号网盘中的真实 fid，需 access_token。
+        此处 file_id 为账号网盘中的真实 fid。优先走 `/file/download_info`
+        并带 `platform=android` 客户端标识（模拟客户端下载，减半消耗）。
         """
         token = self._decrypt_credential(account)
-        body = {"driveId": 0, "etag": "", "fileId": int(file_id), "s3keyFlag": ""}
+        body = {
+            "driveId": 0,
+            "etag": "",
+            "fileId": int(file_id),
+            "s3keyFlag": "",
+        }
         url = _signed_url(_AApi + "/file/download_info")
+        headers = {
+            **_HEADERS,
+            "authorization": f"Bearer {token}",
+            "platform": "android",
+        }
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                url,
-                json=body,
-                headers={**_HEADERS, "authorization": f"Bearer {token}"},
-            )
+            resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,

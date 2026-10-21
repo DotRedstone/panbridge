@@ -44,6 +44,36 @@ class _FakeAsyncClient:
         return _FakeResponse(404, {"code": 404, "message": "not found"})
 
 
+class _CapturingClient:
+    """捕获最近一次 post 的 url/body/headers，供登录态下载测试断言。"""
+
+    last_call: dict | None = None
+
+    def __init__(self, routes: dict[str, _FakeResponse]):
+        self._routes = routes
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    async def get(self, url, params=None, headers=None):
+        for path, resp in self._routes.items():
+            if path in url:
+                return resp
+        return _FakeResponse(404, {"code": 404, "message": "not found"})
+
+    async def post(self, url, json=None, headers=None):
+        _CapturingClient.last_call = {
+            "url": url, "json": json, "headers": headers,
+        }
+        for path, resp in self._routes.items():
+            if path in url:
+                return resp
+        return _FakeResponse(404, {"code": 404, "message": "not found"})
+
+
 def _share_routes(files: list[dict]):
     return {
         "/gsb/s/share-key": _FakeResponse(
@@ -278,3 +308,137 @@ def test_map_share_item_preserves_download_metadata():
     assert f.raw["etag"] == "e1"
     assert f.raw["s3keyFlag"] == "f1"
     assert f.raw["fileId"] == "1001"
+
+
+# ---- 登录态下载（platform=android 客户端标识）----
+
+
+def _authed_account(cipher) -> Account:
+    from panbridge.domain.models import Account
+
+    token = cipher.encrypt("test-access-token")
+    return Account(
+        id="a", provider="123", label="x", encrypted_credential=token
+    )
+
+
+def _capturing_install(monkeypatch, routes):
+    import panbridge.providers.pan123.provider as mod
+
+    def fake_client(*a, **k):
+        return _CapturingClient(routes)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", fake_client)
+
+
+@pytest.mark.asyncio
+async def test_get_share_download_info_authed(monkeypatch):
+    """登录态下载：用 Etag+S3KeyFlag 调 /file/download_info，带 android 头。"""
+    import base64
+
+    real_url = "https://download.cdn.example.com/a.zip"
+    encoded = base64.b64encode(real_url.encode()).decode()
+    routes = {
+        "/api/file/download_info": _FakeResponse(
+            200,
+            {
+                "code": 0,
+                "data": {
+                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                },
+            },
+        ),
+    }
+    _capturing_install(monkeypatch, routes)
+    from panbridge.infrastructure.crypto import CredentialCipher
+
+    cipher = CredentialCipher("test-secret-key-for-panbridge")
+    acct = _authed_account(cipher)
+    p = Pan123Provider(cipher=cipher)
+
+    from panbridge.domain.models import ShareFile
+
+    target = ShareFile(
+        file_id="1001",
+        name="a.zip",
+        size=2048,
+        raw={"etag": "e1", "s3keyFlag": "f1", "size": 2048, "fileId": "1001"},
+    )
+    info = await p.get_share_download_info(
+        "k73Mjv-3vrnA", "IlUH", "1001", file=target, account=acct
+    )
+    assert info["url"] == real_url
+    assert info["name"] == "a.zip"
+    assert info["checksum"] == "e1"
+    # 断言请求走了 /file/download_info，且带 android 平台标识 + Bearer token。
+    call = _CapturingClient.last_call
+    assert call is not None
+    assert "/api/file/download_info" in call["url"]
+    assert call["headers"]["platform"] == "android"
+    assert call["headers"]["authorization"] == "Bearer test-access-token"
+    assert call["json"]["etag"] == "e1"
+    assert call["json"]["s3keyFlag"] == "f1"
+
+
+@pytest.mark.asyncio
+async def test_get_share_download_info_authed_missing_metadata(monkeypatch):
+    """登录态下载但缺 Etag/S3KeyFlag 时，如实报下载失败。"""
+    from panbridge.infrastructure.crypto import CredentialCipher
+
+    cipher = CredentialCipher("test-secret-key-for-panbridge")
+    acct = _authed_account(cipher)
+    p = Pan123Provider(cipher=cipher)
+
+    from panbridge.domain.models import ShareFile
+
+    target = ShareFile(file_id="1001", name="a.zip", size=2048, raw={})
+    with pytest.raises(DomainError) as exc:
+        await p.get_share_download_info(
+            "k73Mjv-3vrnA", "IlUH", "1001", file=target, account=acct
+        )
+    assert exc.value.code == ErrorCode.DOWNLOAD_FAILED
+
+
+@pytest.mark.asyncio
+async def test_get_share_download_info_anonymous_still_works(monkeypatch):
+    """无 account 时仍走匿名下载（向后兼容）。"""
+    import base64
+
+    real_url = "https://download.cdn.example.com/a.zip"
+    encoded = base64.b64encode(real_url.encode()).decode()
+    routes = {
+        "/gsb/s/share-key": _FakeResponse(
+            200, {"info": {"code": 0, "data": {"UserID": 1625770}}}
+        ),
+        "/api/share/get": _FakeResponse(
+            200,
+            {
+                "code": 0,
+                "data": {
+                    "InfoList": [
+                        {
+                            "FileId": 1001,
+                            "FileName": "a.zip",
+                            "Type": 0,
+                            "Size": 2048,
+                            "Etag": "e1",
+                            "S3KeyFlag": "f1",
+                        }
+                    ]
+                },
+            },
+        ),
+        "/api/share/download/info": _FakeResponse(
+            200,
+            {
+                "code": 0,
+                "data": {
+                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                },
+            },
+        ),
+    }
+    _install(monkeypatch, routes)
+    p = Pan123Provider(cipher=None)
+    info = await p.get_share_download_info("abc123", None, "1001")
+    assert info["url"] == real_url

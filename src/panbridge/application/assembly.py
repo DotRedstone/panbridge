@@ -111,8 +111,8 @@ def build_auth_service(
 ) -> AuthService | None:
     """构建认证服务；无 cipher（未配置主密钥）时返回 None。
 
-    扫码登录支持夸克、阿里云盘、115 网盘三个平台；其余平台需手工导入
-    凭据（见 docs/providers.md）。
+    扫码登录支持夸克、阿里云盘、115 网盘、123 云盘四个平台；其余平台需
+    手工导入凭据（见 docs/providers.md）。
     """
     if cipher is None:
         return None
@@ -121,9 +121,15 @@ def build_auth_service(
     # 注册各平台扫码后端；后端初始化失败（依赖缺失）时不阻断其他平台。
     from panbridge.providers.aliyun.qr_backend import AliyunQrBackend
     from panbridge.providers.pan115.qr_backend import Pan115QrBackend
+    from panbridge.providers.pan123.qr_backend import Pan123QrBackend
     from panbridge.providers.quark.qr_backend import QuarkQrBackend
 
-    for backend_cls in (QuarkQrBackend, AliyunQrBackend, Pan115QrBackend):
+    for backend_cls in (
+        QuarkQrBackend,
+        AliyunQrBackend,
+        Pan115QrBackend,
+        Pan123QrBackend,
+    ):
         try:
             qr_auth.register_backend(backend_cls())
         except RuntimeError as exc:  # 依赖缺失，跳过该平台

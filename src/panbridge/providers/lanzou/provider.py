@@ -257,6 +257,7 @@ class LanzouProvider(ShareProvider):
         password: str | None,
         file_id: str,
         file: ShareFile | None = None,
+        account: Account | None = None,
     ) -> dict[str, Any]:
         """解析蓝奏云分享单文件直链（匿名）。
 

@@ -249,12 +249,20 @@ class Worker:
                 )
             else:
                 # 纯 DOWNLOAD：优先匿名分享直链下载（无需账号）。
+                # 若任务带 account_id（如 123 云盘登录态下载），传入
+                # 账号走登录态直链，绕开匿名流量/登录限制。
+                if account is None and task.account_id:
+                    try:
+                        account = await self._get_account(task.account_id)
+                    except DomainError:
+                        account = None
                 downloaded = await self._download_share_entries(
                     provider,
                     extracted.share_id,
                     extracted.password,
                     entries,
                     task.on_conflict.value,
+                    account=account,
                     task_id=task.id,
                 )
 
@@ -654,21 +662,29 @@ class Worker:
         entries: list[_Entry],
         on_conflict: str,
         *,
+        account=None,
         task_id: str | None = None,
     ) -> list[dict]:
-        """匿名分享直链下载（无需账号），保留相对目录结构。
+        """分享直链下载，保留相对目录结构。
 
         对每个选中文件调用 `get_share_download_info`，传入 inspect 阶段
         已解析出的 `file`（含 raw 元数据），避免 Provider 重复递归扫描
-        整棵分享目录。
+        整棵分享目录。`account` 可选：提供时走登录态直链下载（如 123
+        云盘绕开匿名流量/登录限制）。
         """
         results: list[dict] = []
         for ent in entries:
             if task_id:
                 await self._check_cancelled(task_id)
-            info = await provider.get_share_download_info(
-                share_id, password, ent.source_fid, file=ent.file
-            )
+            if account is not None:
+                info = await provider.get_share_download_info(
+                    share_id, password, ent.source_fid, file=ent.file,
+                    account=account,
+                )
+            else:
+                info = await provider.get_share_download_info(
+                    share_id, password, ent.source_fid, file=ent.file
+                )
             url = info["url"]
             name = (
                 info.get("name")

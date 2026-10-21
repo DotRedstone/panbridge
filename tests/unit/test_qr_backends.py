@@ -289,3 +289,115 @@ async def test_pan115_backend_status_codes(monkeypatch):
     # -2 → cancelled
     state["status"] = -2
     assert (await backend.check(ticket)).status == "cancelled"
+
+
+# ---- 123 云盘后端 ----
+
+
+class _Fake123Response:
+    def __init__(self, payload: dict, status: int = 200):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _Fake123Client:
+    """模拟 123 扫码登录的 httpx.AsyncClient。"""
+
+    def __init__(self):
+        self.uni_id = "uni-123"
+        self.login_status = 0
+        self.token = ""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    async def get(self, url, params=None, headers=None):
+        if url.endswith("/qr-code/generate"):
+            return _Fake123Response(
+                {
+                    "code": 0,
+                    "data": {
+                        "url": "https://yun.123pan.cn/wx-app-login.html",
+                        "uniID": self.uni_id,
+                    },
+                }
+            )
+        if url.endswith("/qr-code/result"):
+            if self.token:
+                return _Fake123Response(
+                    {
+                        "code": 200,
+                        "data": {"loginStatus": 3, "token": self.token},
+                    }
+                )
+            return _Fake123Response(
+                {"code": 0, "data": {"loginStatus": self.login_status}}
+            )
+        return _Fake123Response({"code": 500, "message": "unknown"}, 500)
+
+    async def post(self, url, json=None, headers=None):
+        return _Fake123Response({"code": 0, "data": {}})
+
+
+@pytest.mark.asyncio
+async def test_pan123_backend_flow(monkeypatch):
+    import httpx
+
+    from panbridge.providers.pan123.qr_backend import Pan123QrBackend
+
+    fake = _Fake123Client()
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: fake)
+
+    backend = Pan123QrBackend()
+    ticket = await backend.start()
+    assert ticket.state["uniID"] == "uni-123"
+    assert "uniID=uni-123" in ticket.qr_url
+
+    # 0 → waiting
+    assert (await backend.check(ticket)).status == "waiting"
+
+    # 1 → scanned
+    fake.login_status = 1
+    assert (await backend.check(ticket)).status == "scanned"
+
+    # 2 → cancelled
+    fake.login_status = 2
+    assert (await backend.check(ticket)).status == "cancelled"
+
+    # 4 → expired
+    fake.login_status = 4
+    assert (await backend.check(ticket)).status == "expired"
+
+    # 3 + token → success，暂存 token
+    fake.token = "test-access-token-123"
+    status = await backend.check(ticket)
+    assert status.status == "success"
+    assert ticket.state["token"] == "test-access-token-123"
+
+    cred = await backend.finish(ticket)
+    assert cred.credential == "test-access-token-123"
+    assert cred.label == "123-qr"
+
+
+@pytest.mark.asyncio
+async def test_pan123_backend_finish_before_confirm(monkeypatch):
+    import httpx
+
+    from panbridge.domain.errors import DomainError, ErrorCode
+
+    from panbridge.providers.pan123.qr_backend import Pan123QrBackend
+
+    fake = _Fake123Client()
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: fake)
+
+    backend = Pan123QrBackend()
+    ticket = await backend.start()
+    with pytest.raises(DomainError) as exc:
+        await backend.finish(ticket)
+    assert exc.value.code == ErrorCode.ACTION_REQUIRED

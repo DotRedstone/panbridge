@@ -295,6 +295,7 @@ class PikPakProvider(ShareProvider):
         password: str | None,
         file_id: str,
         file: ShareFile | None = None,
+        account: Account | None = None,
     ) -> dict[str, Any]:
         """解析分享中单个文件的直链（匿名，无需登录）。
 

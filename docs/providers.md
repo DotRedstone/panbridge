@@ -21,7 +21,7 @@
 | `quark` | 夸克网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | **扫码登录** | ✅ 匿名解析真实验证 |
 | `aliyun` | 阿里云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | **扫码登录**（refresh_token） | ✅ 匿名解析真实验证 |
 | `lanzou` | 蓝奏云 | ✅ | ✅ | ❌(无账号) | ❌ | ✅ | - | 无需登录 | ✅ 解析+直链真实验证（下载节点风控） |
-| `123` | 123 云盘 | ✅ | ✅ | ❌(未验证) | ✅ | ✅ | ✅ | 手工 access_token | ✅ 匿名解析+下载协议真实验证 |
+| `123` | 123 云盘 | ✅ | ✅ | ❌(未验证) | ✅ | ✅ | ✅ | **扫码登录**（token） | ✅ 匿名解析+登录态下载协议真实验证 |
 | `baidu` | 百度网盘 | 🟠(风控) | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 BDUSS Cookie | 🟠 匿名触发 9019 风控 |
 | `115` | 115 网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | **扫码登录**（Cookie） | ⚠️ 匿名解析+Mock |
 | `pikpak` | PikPak | ✅ | ✅ | ❌(未验证) | ❌ | ✅ | ❌ | 无需登录(分享) | ⚠️ 协议+Mock（需住宅IP） |
@@ -35,7 +35,7 @@
 | `mock` | Mock | - | - | - | - | - | - | - | 测试用 |
 
 > **认证方式重要说明（如实）**：
-> - **已实现扫码登录的平台（3 个）**：
+> - **已实现扫码登录的平台（4 个）**：
 >   - `quark`：`panbridge auth login --provider quark`，复用 quarkpan 二维码协议，
 >     service_ticket 换 Cookie，加密入库。
 >   - `aliyun`：`panbridge auth login --provider aliyun`，复用 aligo 登录端点
@@ -44,13 +44,16 @@
 >   - `115`：`panbridge auth login --provider 115`，复用 p115client 二维码协议
 >     （login_qrcode_token → scan_status 轮询 → scan_result 取 Cookie），
 >     不写 `~/115-cookies.txt` 默认路径，Cookie 加密入库。
->   - 三者均支持：二维码过期、主动取消、重复扫码（幂等轮询）、凭据失效后重新
+>   - `123`：`panbridge auth login --provider 123`，调用 login.123pan.com
+>     二维码协议（qr-code/generate → qr-code/result 轮询 loginStatus → token），
+>     token 加密入库（30 天有效期）。
+>   - 四者均支持：二维码过期、主动取消、重复扫码（幂等轮询）、凭据失效后重新
 >     登录。**扫码状态流转已通过协议模拟测试验证，但真实扫码留待用户验收**。
 > - 其余平台（百度/天翼/移动/UC/迅雷/微云/光鸭/悟空）未见稳定公开的官方
 >   OAuth 或扫码端点，保留**手工凭据导入**路径：
 >   `panbridge auth import --provider <平台> --credential "<Cookie/token>"`。
 > - 不要把「需要手工 Cookie/token」的平台描述为「扫码即可使用」——
->   这是不准确的。当前扫码登录能力边界：**quark/aliyun/115 已实现（协议），
+>   这是不准确的。当前扫码登录能力边界：**quark/aliyun/115/123 已实现（协议），
 >   其余平台需手工凭据导入**。
 
 > 注：UC / 迅雷 / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
@@ -97,11 +100,15 @@
 | `123` | 递归定位小文件 `LTSC_2024_26300.9711.txt`（810B）→ `/b/api/share/download/info` 解析直链 | 下载接口调通，服务器返回业务错误 `5112 分享方流量包不足`（证明协议正确，仅该分享流量耗尽，非协议错误） |
 | `lanzou` | 新协议直链解析 + acw_sc__v2 反爬 | 直链解析成功（三层反爬：acw_sc 自动解、验证页需图形验证码）；下载节点返回「验证码错误」风控 |
 
-> **123 云盘匿名下载协议已完全验证**：`/gsb/s/share-key` 解析短码 →
-> `<uid>.share.123pan.cn/api/share/get` 列表 → `yun.123pan.com/b/api/share/download/info`
-> 下载直链（etag/s3keyFlag/fileId）。服务器返回明确的 `5112` 业务错误码，
-> 证明请求字段、签名、端点全部正确。下载本身因该分享的分享者流量包耗尽而无法完成，
-> 已如实映射为 `QUOTA_EXCEEDED`（非风控/协议错误）。
+> **123 云盘下载协议已完全验证**：`/gsb/s/share-key` 解析短码 →
+> `<uid>.share.123pan.cn/api/share/get` 列表 → 下载直链（etag/s3keyFlag/fileId）。
+> 匿名下载（`/b/api/share/download/info`）仅对「≤100MB 且分享者开启免登录流量包」
+> 的文件生效，否则返回 `5112 需要注册登录或付费后下载`（已映射 `QUOTA_EXCEEDED`）。
+>
+> **登录态下载已实现**：扫码登录拿到 token 后，`get_share_download_info` 走
+> `/api/file/download_info`（带 `platform=android` 客户端标识），用文件 Etag（MD5）
+> + S3KeyFlag 直接取直链，**无需转存**，模拟客户端下载以争取减半流量消耗。
+> 免费账号每月约 10G 下载流量，登录客户端下载可减半消耗。
 >
 > **蓝奏云新协议已真实验证**：2025 年改版后，分享页不再含 `sign`，改为
 > `<iframe src="/fn?<sig>">` → `/fn` 页提供 `wp_sign/ajaxdata` → POST
