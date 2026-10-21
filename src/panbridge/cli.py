@@ -8,6 +8,7 @@
     panbridge auth login --provider 115      # 115 App 扫码
     panbridge auth login --provider 123      # 123 云盘 App 扫码
     panbridge auth login --provider uc       # UC 网盘 App 扫码
+    panbridge auth login-password            # 天翼云盘账号密码登录
     # 手工导入凭据（安全：不经过命令行参数，交互式无回显输入）
     panbridge auth import --provider baidu            # 提示后无回显输入
     panbridge auth import --provider baidu --label work
@@ -207,6 +208,75 @@ async def _import(provider: str, label: str, credential: str | None) -> int:
         await engine.dispose()
 
 
+async def _login_password(provider: str) -> int:
+    """账号密码登录（针对无扫码能力但有账号密码 SDK 的平台）。
+
+    目前支持：天翼云盘（cloud189）。交互式无回显读取账号密码，
+    用 SDK 验证通过后，把 {username, password} JSON 加密入库。
+    账号密码绝不进入命令行参数/进程列表/Shell 历史。
+    """
+    settings = Settings.from_env()
+    engine, auth, service, cipher = _build(settings)
+    await init_db(engine)
+    if auth is None:
+        print("❌ 未配置 PANBRIDGE_SECRET_KEY，无法加密存储账号凭据。")
+        return 1
+    try:
+        if provider != "cloud189":
+            print(
+                f"❌ {provider} 暂不支持账号密码登录。\n"
+                "   可用账号密码登录的平台：cloud189（天翼云盘）。\n"
+                f"   其他平台请用 `panbridge auth import --provider {provider}` "
+                "手工导入凭据。"
+            )
+            return 1
+
+        username = input("请输入天翼云盘账号（手机号）: ").strip()
+        if not username:
+            print("❌ 账号为空，已取消。")
+            return 1
+        password = getpass.getpass("请输入天翼云盘密码（输入不回显）: ")
+        if not password:
+            print("❌ 密码为空，已取消。")
+            return 1
+
+        # 用 SDK 验证账号密码（失败会抛异常）
+        try:
+            import cloud189.auth as cloud189_auth
+
+            auth_client = cloud189_auth.CloudAuthClient(username, password)
+            result = await asyncio.to_thread(
+                auth_client.login_by_password, username, password
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"❌ 登录失败（账号密码错误或网络异常）：{exc}")
+            return 1
+
+        # 验证返回结构（getSessionForPC 应返回含 sessionKey）
+        if not isinstance(result, dict) or "sessionKey" not in result:
+            print("❌ 登录失败：未获取到有效会话。")
+            return 1
+
+        import json as _json
+
+        credential = _json.dumps(
+            {"username": username, "password": password}, ensure_ascii=False
+        )
+        encrypted = cipher.encrypt(credential)
+        account = await service.add_account(
+            provider, f"{provider}-password", encrypted
+        )
+        print(
+            "✅ 天翼云盘账号密码登录成功，凭据已加密保存。\n"
+            f"   account_id = {account.id}\n"
+            f"   provider   = {account.provider}\n"
+            f"   label      = {account.label}"
+        )
+        return 0
+    finally:
+        await engine.dispose()
+
+
 def _read_credential_securely() -> str:
     """安全读取凭据：优先交互无回显，其次环境变量，最后 stdin 管道。
 
@@ -245,6 +315,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     login_p.add_argument("--provider", default="quark", help="网盘平台")
 
+    pwlogin_p = auth_sub.add_parser(
+        "login-password",
+        help="账号密码登录（cloud189 天翼云盘）",
+    )
+    pwlogin_p.add_argument(
+        "--provider", default="cloud189", help="网盘平台（目前仅 cloud189）"
+    )
+
     import_p = auth_sub.add_parser("import", help="手工导入凭据（加密入库）")
     import_p.add_argument("--provider", required=True, help="网盘平台")
     import_p.add_argument("--label", default="", help="账号标签（可选）")
@@ -267,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.auth_command == "login":
         return asyncio.run(_login(args.provider))
+    if args.auth_command == "login-password":
+        return asyncio.run(_login_password(args.provider))
     if args.auth_command == "import":
         return asyncio.run(_import(args.provider, args.label, args.credential))
     if args.auth_command == "status":

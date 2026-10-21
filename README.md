@@ -9,13 +9,13 @@
 | 夸克网盘 | 扫码登录 | 解析 / 转存 / 下载 | ✅ 匿名解析已真实验证 |
 | 阿里云盘 | 扫码登录（refresh_token） | 解析 / 预览（**无需登录**）/ 转存 / 下载 | ✅ 解析已真实验证 |
 | 蓝奏云 | 无需登录 | 解析 / 直链下载（**匿名**） | ✅ 解析+直链真实验证（下载节点验证码风控） |
-| 123 云盘 | access_token | 解析 / 直链下载（**匿名**）/ 转存 | ✅ 匿名解析 + 下载协议真实验证 |
+| 123 云盘 | 扫码登录（token） | 解析 / 直链下载（**匿名**）/ 转存 / 登录态下载 | ✅ 匿名解析 + 登录态下载协议真实验证 |
 | 百度网盘 | BDUSS Cookie | 解析列表 / 直链 / 转存 | 🟠 匿名触发风控（需 Cookie） |
 | 115 网盘 | 扫码登录（Cookie） | 解析（**匿名**）/ 转存 / 下载 / 文件列表 | ⚠️ 匿名解析 + Mock |
 | PikPak | 无需登录（分享） | 解析 / 直链下载（**匿名**）/ 转存 | ⚠️ 协议实现 + Mock |
-| 天翼云盘 | 账号密码 / SSON Cookie | 分享解析（**匿名**）/ 转存 / 下载 / 账号文件列表（**需登录**） | ⚠️ 协议 + Mock |
+| 天翼云盘 | **账号密码登录** | 分享解析（**匿名**）/ 转存 / 下载 / 账号文件列表（**需登录**） | ⚠️ 协议 + Mock |
 | 移动云盘（和彩云） | Authorization(Basic) | 分享解析 / 转存 / 账号文件列表 / 下载（**需登录**） | ⚠️ 协议 + Mock |
-| UC 网盘 | Cookie | 分享解析 / 转存 / 下载 / 账号文件列表（**需登录**） | ⚠️ 协议 + Mock |
+| UC 网盘 | **扫码登录**（Cookie） | 分享解析 / 转存 / 下载 / 账号文件列表（**需登录**） | ⚠️ 扫码端点真实调通 |
 | 迅雷云盘 | refresh_token | 分享解析 / 转存 / 下载 / 账号文件列表（**需登录**） | ⚠️ 协议 + Mock |
 | 腾讯微云 | skey Cookie | 分享解析（**匿名**）/ 转存（**需登录**） | ⚠️ 协议 + Mock |
 | 光鸭云盘 | access_token/refresh_token | 分享解析（**匿名**）/ 转存 / 下载 / 文件列表（**需登录**） | ⚠️ 协议 + Mock |
@@ -110,16 +110,21 @@ uv run python -m panbridge.worker
 > 密钥并保存到 `~/.config/panbridge/secret.key`（权限 0600，已加入 `.gitignore`）。
 > 多进程/多机共享时再通过环境变量显式注入。
 
-## 账号登录（扫码）
+## 账号登录（扫码 + 账号密码）
 
-**扫码登录支持夸克、阿里云盘、115 网盘**（复用各平台 SDK 的官方二维码
-协议，凭据加密入库，不落 SDK 明文目录）：
+**扫码登录支持夸克、阿里云盘、115 网盘、123 云盘、UC 网盘**（复用各平台
+SDK 的官方二维码协议，凭据加密入库，不落 SDK 明文目录）：
 
 ```bash
 # 1. 扫码登录（终端显示二维码，用对应 App 扫描后自动完成）
 uv run panbridge auth login --provider quark     # 夸克 App
 uv run panbridge auth login --provider aliyun    # 阿里云盘 App
 uv run panbridge auth login --provider 115       # 115 App
+uv run panbridge auth login --provider 123       # 123 云盘 App
+uv run panbridge auth login --provider uc        # UC 网盘 App
+
+# 1b. 账号密码登录（天翼云盘；扫码接口已失效，账号密码更可靠）
+uv run panbridge auth login-password --provider cloud189
 
 # 2. 查询登录状态
 uv run panbridge auth status --provider quark
@@ -132,10 +137,9 @@ uv run panbridge auth logout --provider quark
 到本地数据库。后续运行自动加载已登录账号，不再要求手动填写。凭据失效时
 会提示重新扫码。
 
-> **其他平台的认证方式**：百度（BDUSS Cookie）、天翼（账号密码/Cookie）、
-> 移动云盘（Authorization）、UC（Cookie）、迅雷（refresh_token）、微云（skey）、
-> 光鸭（access_token）、悟空（Cookie/token）目前**没有扫码登录**，通过
-> 手工凭据导入（加密入库，不落明文）：
+> **其他平台的认证方式**：百度（BDUSS Cookie）、移动云盘（Authorization）、
+> 迅雷（refresh_token）、微云（skey）、光鸭（access_token）、悟空（Cookie/token）
+> 目前**没有扫码登录**，通过手工凭据导入（加密入库，不落明文）：
 >
 > ```bash
 > uv run panbridge auth import --provider baidu --credential "BDUSS=..."
@@ -143,8 +147,27 @@ uv run panbridge auth logout --provider quark
 >
 > 不要把需要手工 Cookie/token 的平台描述为「扫码即可使用」。
 
-> 也提供等价 REST API（`POST /v1/auth/qr/start` 等，为 AstrBot 集成预留），
-> 无需 WebUI，详见 [docs/api.md](docs/api.md)。
+> 也提供等价 REST API（`POST /v1/auth/qr/start` 等），无需 WebUI，
+> 详见 [docs/api.md](docs/api.md)。
+
+## AstrBot 机器人集成
+
+内置 AstrBot 插件（见 [`astrbot-plugin/`](astrbot-plugin/)），可让机器人
+在 QQ / 微信 / Telegram / 钉钉 / 飞书等平台调用 PanBridge 服务：
+
+- 把 `astrbot-plugin/` 目录放入 AstrBot 的 `data/plugins/`，在管理面板启用并
+  配置 `base_url`（PanBridge 服务地址）与 `api_key`。
+- 在机器人对话中直接发送网盘链接即自动解析，或用指令转存/下载/扫码登录：
+
+```
+/pb <链接>             解析分享
+/pb download <链接>    下载
+/pb save <链接>        转存
+/pb status [id]        查任务
+/pb login <provider>   扫码登录（发二维码图片）
+```
+
+详见 [astrbot-plugin/README.md](astrbot-plugin/README.md)。
 
 ## 阿里云盘（解析无需登录）
 
