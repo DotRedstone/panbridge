@@ -21,9 +21,13 @@ pan-relay（MIT 许可）的 `xunlei_client.py`，代码为本项目独立编写
 6. 账号文件列表：GET /drive/v1/files?parent_id=&limit=
 7. 下载直链：GET /drive/v1/files/{file_id} → web_content_link / medias[].link.url
 
-能力边界（如实声明）：
-- 「解析分享 / 转存 / 账号列表 / 下载直链」需 refresh_token，协议已实现
-  但未经真实账号验证。
+能力边界（如实声明，2026-10-22 真机验证）：
+- **分享解析 / 目录浏览：匿名可用**。captcha 端点（/v1/shield/captcha/init）
+  无需登录即可签发 captcha_token，带 `x-captcha-token` 即可读
+  `/drive/v1/share`（根目录）与 `/drive/v1/share/detail`（子目录）。
+- **转存 / 账号列表 / 下载直链：需 refresh_token**。匿名请求
+  `/drive/v1/files/{id}` 返回 401（转存后取直链是平台设计的唯一路径），
+  故 `get_download_info` 仍为登录态能力。
 """
 
 from __future__ import annotations
@@ -46,6 +50,10 @@ from panbridge.providers.base import ShareProvider
 
 _API = "https://api-pan.xunlei.com"
 _AUTH_API = "https://xluser-ssl.xunlei.com"
+
+# 匿名请求用的固定设备种子：captcha 端点无需登录即可签发 token，
+# 分享解析/目录浏览可匿名完成（下载直链仍需登录态）。
+_ANON_DEVICE_SEED = "panbridge-anonymous-device-v1"
 
 _CLIENT_ID = "Xp6vsxz_7IYVw2BB"
 _CLIENT_SECRET = "Xp6vsy4tN9toTVdMSpomVdXpRmES"
@@ -182,6 +190,13 @@ class XunleiProvider(ShareProvider):
     async def _get_captcha_token(self, account: Account, action: str) -> str:
         refresh_token = self._credential(account)
         device_id = self._device_id(refresh_token)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await self._captcha_token_for(client, device_id, action)
+
+    async def _captcha_token_for(
+        self, client: httpx.AsyncClient, device_id: str, action: str
+    ) -> str:
+        """换取 captcha_token（该端点不需要登录态）。"""
         ts = str(int(time.time() * 1000))
         sign = captcha_sign(
             _CLIENT_ID, _CLIENT_VERSION, _PACKAGE_NAME, device_id, ts
@@ -192,25 +207,24 @@ class XunleiProvider(ShareProvider):
             "x-client-id": _CLIENT_ID,
             "x-device-id": device_id,
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                _AUTH_API + "/v1/shield/captcha/init",
-                json={
-                    "action": action,
-                    "captcha_token": "",
-                    "client_id": _CLIENT_ID,
-                    "device_id": device_id,
-                    "redirect_uri": "xlaccsdk01://xunlei.com/callback?state=harbor",
-                    "meta": {
-                        "client_version": _CLIENT_VERSION,
-                        "package_name": _PACKAGE_NAME,
-                        "user_id": "",
-                        "timestamp": ts,
-                        "captcha_sign": sign,
-                    },
+        resp = await client.post(
+            _AUTH_API + "/v1/shield/captcha/init",
+            json={
+                "action": action,
+                "captcha_token": "",
+                "client_id": _CLIENT_ID,
+                "device_id": device_id,
+                "redirect_uri": "xlaccsdk01://xunlei.com/callback?state=harbor",
+                "meta": {
+                    "client_version": _CLIENT_VERSION,
+                    "package_name": _PACKAGE_NAME,
+                    "user_id": "",
+                    "timestamp": ts,
+                    "captcha_sign": sign,
                 },
-                headers=headers,
-            )
+            },
+            headers=headers,
+        )
         if resp.status_code != 200:
             raise DomainError(
                 ErrorCode.INTERNAL_ERROR,
@@ -226,6 +240,42 @@ class XunleiProvider(ShareProvider):
                 ErrorCode.INTERNAL_ERROR, "xunlei captcha token empty", retryable=True
             )
         return token
+
+    async def _anon_get(
+        self, action: str, path: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """匿名（无账号）调用网盘 API。
+
+        迅雷的 captcha 端点不需要登录即可签发 token，因此分享解析与
+        目录浏览可匿名完成；涉及账号的端点会返回 401，映射为
+        ACTION_REQUIRED 而非伪造成功。
+        """
+        device_id = derive_device_id(_ANON_DEVICE_SEED)
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
+            "x-client-id": _CLIENT_ID,
+            "x-device-id": device_id,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            captcha = await self._captcha_token_for(client, device_id, action)
+            resp = await client.get(
+                _API + path,
+                params=params,
+                headers={**headers, "x-captcha-token": captcha},
+            )
+        if resp.status_code in (401, 403):
+            raise DomainError(
+                ErrorCode.ACTION_REQUIRED,
+                "xunlei requires login for this operation",
+            )
+        if resp.status_code not in (200, 201):
+            raise DomainError(
+                ErrorCode.INTERNAL_ERROR,
+                f"xunlei {path.rsplit('/', 1)[-1]} returned {resp.status_code}",
+                retryable=True,
+            )
+        return resp.json()
 
     async def _request_pan(
         self,
@@ -282,43 +332,107 @@ class XunleiProvider(ShareProvider):
     # ---- Provider 接口 ----
 
     async def inspect_share(self, share_id: str, password: str | None) -> Share:
-        # 迅雷解析分享需要 access_token（refresh_token 登录），匿名不可用。
+        """匿名解析分享（无需登录，2026-10 真机验证）。
+
+        迅雷的 captcha 端点可匿名签发 token，`/drive/v1/share` 匿名可读，
+        返回分享根目录文件列表与 `pass_code_token`（子目录遍历凭据）。
+        下载直链仍需登录态（匿名 `/drive/v1/files/{id}` 返回 401）。
+        """
+        sid = self._parse_share_id(share_id)
+        data = await self._anon_get(
+            "GET:/drive/v1/share", "/drive/v1/share", self._share_params(sid, password)
+        )
+        self._raise_share_status(data)
+        files = [self._map_file(f) for f in data.get("files", [])]
+        title = files[0].name if files else f"xunlei-{sid}"
+        return Share(
+            provider=self.name,
+            share_id=sid,
+            title=title,
+            files=files,
+            password=password,
+            raw={
+                "pass_code_token": data.get("pass_code_token", ""),
+                "file_num": data.get("file_num"),
+            },
+        )
+
+    @staticmethod
+    def _share_params(
+        share_id: str, password: str | None, pass_code_token: str = ""
+    ) -> dict[str, Any]:
+        """分享接口的查询参数（与网页端保持一致）。"""
+        return {
+            "share_id": share_id,
+            "pass_code": password or "",
+            "limit": 100,
+            "keyword": "",
+            "pass_code_token": pass_code_token,
+            "page_token": "",
+            "scene": "NORMAL",
+            "order": "DEFAULT_ORDER",
+            "thumbnail_size": "SIZE_MEDIUM",
+        }
+
+    @staticmethod
+    def _raise_share_status(data: dict[str, Any]) -> None:
+        """把分享接口的 share_status 映射为稳定的领域错误。"""
+        if data.get("error_code"):
+            raise XunleiProvider._map_error(data, "share")
+        status = data.get("share_status")
+        if status in (None, "", "OK"):
+            return
+        if status == "PASS_CODE_ERROR":
+            raise DomainError(
+                ErrorCode.INVALID_PASSWORD, "xunlei pass code incorrect"
+            )
+        if status == "PASS_CODE_EMPTY":
+            raise DomainError(
+                ErrorCode.ACTION_REQUIRED, "xunlei share requires pass code"
+            )
+        if status == "SENSITIVE_RESOURCE":
+            raise DomainError(
+                ErrorCode.INVALID_SHARE, "xunlei share blocked by platform"
+            )
         raise DomainError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            "xunlei share inspection requires login; use an account-bound flow",
+            ErrorCode.INVALID_SHARE,
+            f"xunlei share status: {data.get('share_status_text') or status}",
         )
 
     async def _fetch_share(
-        self, account: Account, share_id: str, password: str | None
+        self,
+        account: Account,
+        share_id: str,
+        password: str | None,
+        parent_id: str | None = None,
     ) -> tuple[str, list[ShareFile], dict[str, Any]]:
+        """登录态解析分享（根目录 + 可选子目录）。"""
         sid = self._parse_share_id(share_id)
-        data = await self._request_pan(
+        root = await self._request_pan(
             account,
             "GET",
             _API + "/drive/v1/share",
             action="GET:/drive/v1/share",
+            params=self._share_params(sid, password),
+        )
+        self._raise_share_status(root)
+        token = root.get("pass_code_token", "")
+        if not parent_id:
+            files = [self._map_file(f) for f in root.get("files", [])]
+            return token, files, root
+        detail = await self._request_pan(
+            account,
+            "GET",
+            _API + "/drive/v1/share/detail",
+            action="GET:/drive/v1/share/detail",
             params={
-                "share_id": sid,
-                "pass_code": password or "",
-                "limit": 100,
-                "pass_code_token": "",
-                "page_token": "",
+                **self._share_params(sid, password, token),
+                "parent_id": parent_id,
             },
         )
-        if data.get("error_code"):
-            raise self._map_error(data, "share")
-        status = data.get("share_status")
-        if status and status != "OK":
-            if status == "SENSITIVE_RESOURCE":
-                raise DomainError(
-                    ErrorCode.INVALID_SHARE, "xunlei share blocked by platform"
-                )
-            raise DomainError(
-                ErrorCode.INVALID_SHARE,
-                f"xunlei share status: {data.get('share_status_text') or status}",
-            )
-        files = [self._map_file(f) for f in data.get("files", [])]
-        return data.get("pass_code_token", ""), files, data
+        self._raise_share_status(detail)
+        files = [self._map_file(f) for f in detail.get("files", [])]
+        return token, files, detail
 
     @staticmethod
     def _map_error(data: dict[str, Any], ctx: str) -> DomainError:
@@ -344,13 +458,31 @@ class XunleiProvider(ShareProvider):
         parent_id: str | None = None,
         account: Account | None = None,
     ) -> list[ShareFile]:
-        if account is None:
-            raise DomainError(
-                ErrorCode.UNSUPPORTED_OPERATION,
-                "xunlei share listing requires login (refresh_token)",
+        """列出分享目录内容（匿名可用，子目录走 /drive/v1/share/detail）。"""
+        if account is not None:
+            _, files, _ = await self._fetch_share(
+                account, share_id, password, parent_id
             )
-        _, files, _ = await self._fetch_share(account, share_id, password)
-        return files
+            return files
+        sid = self._parse_share_id(share_id)
+        root = await self._anon_get(
+            "GET:/drive/v1/share", "/drive/v1/share", self._share_params(sid, password)
+        )
+        self._raise_share_status(root)
+        if not parent_id:
+            return [self._map_file(f) for f in root.get("files", [])]
+        detail = await self._anon_get(
+            "GET:/drive/v1/share/detail",
+            "/drive/v1/share/detail",
+            {
+                **self._share_params(
+                    sid, password, root.get("pass_code_token", "")
+                ),
+                "parent_id": parent_id,
+            },
+        )
+        self._raise_share_status(detail)
+        return [self._map_file(f) for f in detail.get("files", [])]
 
     async def validate_account(self, account: Account) -> bool:
         try:

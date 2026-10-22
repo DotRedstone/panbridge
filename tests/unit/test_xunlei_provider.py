@@ -150,11 +150,106 @@ async def test_save_shared_files(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_inspect_share_requires_login():
+async def test_inspect_share_anonymous(monkeypatch):
+    """匿名解析：captcha 匿名签发 token + /drive/v1/share 免登录可读。"""
+    routes = {
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/share": _FakeResponse(
+            200,
+            {
+                "share_status": "OK",
+                "pass_code_token": "pt",
+                "files": [
+                    {"id": "d1", "name": "资料", "kind": "drive#folder", "size": "0"},
+                    {"id": "f1", "name": "a.zip", "kind": "drive#file", "size": "123"},
+                ],
+            },
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = XunleiProvider(cipher=_FakeCipher())
+    share = await p.inspect_share("share123", "abcd")
+    assert share.provider == "xunlei"
+    assert share.title == "资料"
+    assert [f.name for f in share.files] == ["资料", "a.zip"]
+    assert share.files[0].is_dir is True
+    assert share.files[1].size == 123
+    assert share.raw["pass_code_token"] == "pt"
+
+
+@pytest.mark.asyncio
+async def test_list_share_files_anonymous_subdir(monkeypatch):
+    """匿名子目录遍历走 /drive/v1/share/detail，且带上 pass_code_token。"""
+    routes = {
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/share/detail": _FakeResponse(
+            200,
+            {
+                "share_status": "OK",
+                "files": [{"id": "f9", "name": "inner.zip", "kind": "drive#file"}],
+            },
+        ),
+        "/drive/v1/share": _FakeResponse(
+            200,
+            {
+                "share_status": "OK",
+                "pass_code_token": "pt",
+                "files": [{"id": "d1", "name": "dir", "kind": "drive#folder"}],
+            },
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = XunleiProvider(cipher=_FakeCipher())
+    root = await p.list_share_files("share123", "abcd")
+    assert [f.name for f in root] == ["dir"]
+    kids = await p.list_share_files("share123", "abcd", parent_id="d1")
+    assert [f.name for f in kids] == ["inner.zip"]
+
+
+@pytest.mark.asyncio
+async def test_inspect_share_wrong_pass_code(monkeypatch):
+    routes = {
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/share": _FakeResponse(
+            200, {"share_status": "PASS_CODE_ERROR", "files": []}
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = XunleiProvider(cipher=_FakeCipher())
+    with pytest.raises(DomainError) as exc:
+        await p.inspect_share("share123", "wrong")
+    assert exc.value.code == ErrorCode.INVALID_PASSWORD
+
+
+@pytest.mark.asyncio
+async def test_inspect_share_missing_pass_code(monkeypatch):
+    routes = {
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/share": _FakeResponse(
+            200, {"share_status": "PASS_CODE_EMPTY", "files": []}
+        ),
+    }
+    _install_fake(monkeypatch, routes)
     p = XunleiProvider(cipher=_FakeCipher())
     with pytest.raises(DomainError) as exc:
         await p.inspect_share("share123", None)
-    assert exc.value.code == ErrorCode.UNSUPPORTED_OPERATION
+    assert exc.value.code == ErrorCode.ACTION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_anonymous_account_endpoint_requires_login(monkeypatch):
+    """匿名访问账号端点（401）应映射 ACTION_REQUIRED，不伪造成功。"""
+    routes = {
+        "/v1/shield/captcha/init": _FakeResponse(200, {"captcha_token": "ct"}),
+        "/drive/v1/share": _FakeResponse(
+            401, {"error": "unauthenticated", "error_description": "帐号认证失败"}
+        ),
+    }
+    _install_fake(monkeypatch, routes)
+    p = XunleiProvider(cipher=_FakeCipher())
+    with pytest.raises(DomainError) as exc:
+        await p.inspect_share("share123", None)
+    assert exc.value.code == ErrorCode.ACTION_REQUIRED
 
 
 @pytest.mark.asyncio

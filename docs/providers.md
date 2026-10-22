@@ -28,7 +28,7 @@
 | `cloud189` | 天翼云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | **账号密码登录** | ⚠️ 协议+Mock |
 | `caiyun` | 移动云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | 手工 Authorization | ⚠️ 协议+Mock |
 | `uc` | UC 网盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | **扫码登录**（Cookie） | ⚠️ 扫码端点真实调通 |
-| `xunlei` | 迅雷云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | 手工 refresh_token | ⚠️ 协议+Mock |
+| `xunlei` | 迅雷云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 refresh_token | ✅ 匿名解析+子目录遍历真实验证（2026-10） |
 | `weiyun` | 腾讯微云 | ✅ | ✅ | 🟡 | ✅ | ❌ | ❌ | 手工 skey Cookie | ⚠️ 协议+Mock |
 | `mock` | Mock | - | - | - | - | - | - | - | 测试用 |
 
@@ -69,9 +69,10 @@
 >   这是不准确的。当前扫码登录能力边界：**quark/aliyun/115/123/uc 已实现（协议），
 >   其余平台需手工凭据导入**。
 
-> 注：UC / 迅雷 / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
+> 注：UC / 移动云盘的「解析分享」依赖登录态，无法匿名完成。纯
 > `INSPECT`（无账号）返回 `ACTION_REQUIRED`；`SAVE` / `SAVE_AND_DOWNLOAD`
-> 流程使用账号凭据完成解析+转存。微云「解析分享」匿名可用（NoLogin 路径）。
+> 流程使用账号凭据完成解析+转存。微云「解析分享」匿名可用（NoLogin 路径）；
+> 迅雷「解析分享 + 子目录遍历」匿名可用（captcha 匿名签发，2026-10 实测）。
 >
 > 「匿名下载」列：✅ 表示 `get_share_download_info` 已实现（非空壳），
 > 支持无需账号的分享直链下载。仅 aliyun/lanzou/123/pikpak 四个平台支持。
@@ -103,6 +104,7 @@
 | `123` | 423down 公开分享 `A6cA-I24Jh` | 解析出目录 + 目录遍历（子目录）成功 |
 | `quark` | 423down 公开分享 `04063177664c` | 解析出 1 个目录成功（标题=原版集成更新ISO镜像） |
 | `lanzou` | `wwarh.lanzoum.com/iKpTp331jiqb`（dll修复工具.rar，371KB） | 新协议解析成功（iframe /fn → ajaxfile.php → 直链） |
+| `xunlei` | `pan.xunlei.com/s/VOnZzIDlGhf36i2KbbeVI2mTA1?pwd=s9ga`（简历模板合集） | 匿名解析根目录 + `/drive/v1/share/detail` 子目录遍历（拿到 300MB zip）；错误/缺失提取码分别映射 INVALID_PASSWORD / ACTION_REQUIRED（2026-10-22） |
 
 ### ✅ 真实匿名下载协议验证（直链接口真实调通）
 
@@ -136,6 +138,21 @@
 > （Range 续传兼容）。`get_download_info` 返回的 headers 已含导航头。
 > 真机浏览器对照验证：浏览器访问同一 token 直接下载，纯 HTTP 侧修正导航
 > 头后同样直通，中转页 ajax.php 二次解析仅作兜底保留。
+>
+> **迅雷匿名解析关键结论（2026-10-22 真机实测）**：迅雷的 captcha 端点
+> `/v1/shield/captcha/init` **不需要登录**即可签发 `captcha_token`
+> （10 轮 MD5 盐链签名，纯 Python 实现）。带 `x-captcha-token` 但不带
+> `Authorization` 时：
+> - `GET /drive/v1/share?share_id&pass_code` → 根目录文件列表 +
+>   `pass_code_token`；
+> - `GET /drive/v1/share/detail?share_id&parent_id&pass_code_token` →
+>   子目录内容（**注意**：`/drive/v1/share` 上的 `parent_id` 参数会被忽略，
+>   必须换 detail 端点，这是浏览器抓包确认的）；
+> - 状态码以 `share_status` 表达：`OK` / `PASS_CODE_ERROR`（密码错）/
+>   `PASS_CODE_EMPTY`（缺提取码）/ `SENSITIVE_RESOURCE`（和谐）；
+> - 匿名 `GET /drive/v1/files/{id}` 返回 **401**，即下载直链必须登录
+>   （平台设计为转存后取直链），故匿名下载不支持，`get_share_download_info`
+>   不实现。
 
 ### 🟠 触发风控 / 需登录（如实返回错误码）
 
@@ -172,7 +189,7 @@
 | `baidu` | wxlist → sharedownload(需Cookie) / 账号 /api/list+/api/download | Cookie 直链 |
 | `caiyun` | AES-CBC+mcloud_sign → getOutLinkInfoV6 → IBatchOprTask | 转存/下载 |
 | `uc` | sharepage/detail → save → file/download | 转存/下载 |
-| `xunlei` | refresh_token+captcha → share → restore → files/{id} | 转存/下载 |
+| `xunlei` | refresh_token+captcha → share → restore → files/{id} | 转存/下载（解析已匿名验证） |
 | `weiyun` | WeiyunShareView(NoLogin) → WeiyunSharePartSaveData | 转存 |
 | `cloud189` | getShareInfoByCodeV2 → listShareDir → createBatchTask | 转存/下载 |
 
