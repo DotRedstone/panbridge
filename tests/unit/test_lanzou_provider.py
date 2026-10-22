@@ -12,10 +12,17 @@ from panbridge.providers.lanzou.provider import (
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, text: str = "", data: dict | None = None):
+    def __init__(
+        self,
+        status: int = 200,
+        text: str = "",
+        data: dict | None = None,
+        headers: dict | None = None,
+    ):
         self.status_code = status
         self.text = text
         self._data = data
+        self.headers = headers or {}
 
     def json(self):
         if self._data is None:
@@ -27,6 +34,10 @@ class _FakeAsyncClient:
     def __init__(self, get_response: _FakeResponse, post_response: _FakeResponse):
         self._get = get_response
         self._post = post_response
+        self.cookies = {}  # 简化容器，支持 set(name, value, domain=...)
+
+    def set(self, name: str, value: str, domain: str = "") -> None:
+        self.cookies[name] = value
 
     async def __aenter__(self):
         return self
@@ -34,7 +45,7 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a):
         return None
 
-    async def get(self, url, follow_redirects=False):
+    async def get(self, url, follow_redirects=False, headers=None):
         return self._get
 
     async def post(self, url, data=None, headers=None):
@@ -47,6 +58,24 @@ _SHARE_PAGE = (
     "<script>url : '/ajaxm.php?file=12345'</script>"
     "<div>action=downprocess&sign=SIGN123&p=</div>"
     "</body></html>"
+)
+
+# 新版内嵌 sign 协议（2026）分享页：isngis 变量 + 绝对 ajaxfile 地址
+_INLINE_SIGN_PAGE = (
+    "<html><head><title>newfile.apk - 蓝奏云</title></head>"
+    "<body>"
+    "<script>var isngis = '';</script>"
+    "<script>var isngis = 'SIGNABC_xyz';</script>"
+    "<script>url : 'https://apifile.woozooo.com/ajaxfile.php?file=123'"
+    "</script>"
+    "</body></html>"
+)
+
+# 下载节点验证中转页：加密 file blob + sign，POST ajax.php 换真实直链
+_INTERSTITIAL_PAGE = (
+    "<html><body><script>"
+    "data : { 'file':'ENCBLOB+xx/','el':el,'sign':'SGVsbG8=' },"
+    "</script></body></html>"
 )
 
 
@@ -84,6 +113,33 @@ async def test_inspect_share_anonymous(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_inspect_share_inline_sign_protocol(monkeypatch):
+    """新版内嵌 sign 协议（2026）：isngis + 绝对 ajaxfile 地址。"""
+    _install_fake(
+        monkeypatch,
+        _FakeResponse(200, text=_INLINE_SIGN_PAGE),
+        _FakeResponse(
+            200,
+            data={
+                "zt": 1,
+                "dom": "https://node.example.com",
+                "url": "?ABCD/ef+g=",
+                "inf": "newfile.apk",
+            },
+        ),
+    )
+
+    p = LanzouProvider()
+    share = await p.inspect_share("https://wwawu.lanzouu.com/abc123", None)
+    assert share.title == "newfile.apk"
+    # 直链固定为 dom + /file/ + url（与页面 JS 拼接方式一致）
+    assert (
+        share.files[0].file_id
+        == "https://node.example.com/file/?ABCD/ef+g="
+    )
+
+
+@pytest.mark.asyncio
 async def test_inspect_share_wrong_password(monkeypatch):
     _install_fake(
         monkeypatch,
@@ -112,11 +168,61 @@ async def test_inspect_share_expired(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_download_info_with_direct_url():
-    # file_id 已是直链时直接返回（蓝奏云 inspect_share 已把直链作为 file_id）
+async def test_get_download_info_with_direct_url(monkeypatch):
+    # file_id 已是直链且响应非 HTML（真实文件流）时原样返回
+    _install_fake(
+        monkeypatch,
+        _FakeResponse(
+            200,
+            text=b"\x00\x01binary",
+            headers={"content-type": "application/octet-stream"},
+        ),
+        _FakeResponse(200, data={}),
+    )
+
     p = LanzouProvider()
     info = await p.get_download_info(None, "https://d0.lanzou.com/file/abc")
     assert info["url"] == "https://d0.lanzou.com/file/abc"
+
+
+@pytest.mark.asyncio
+async def test_get_download_info_resolves_interstitial(monkeypatch):
+    """直链返回验证中转页时，二次解析出真实直链。"""
+    _install_fake(
+        monkeypatch,
+        _FakeResponse(
+            200,
+            text=_INTERSTITIAL_PAGE,
+            headers={"content-type": "text/html; charset=utf-8"},
+        ),
+        _FakeResponse(
+            200, data={"zt": 1, "url": "https://cdn.example.com/real.bin"}
+        ),
+    )
+
+    p = LanzouProvider()
+    info = await p.get_download_info(
+        None, "https://node.example.com/file/?ABC"
+    )
+    assert info["url"] == "https://cdn.example.com/real.bin"
+
+
+@pytest.mark.asyncio
+async def test_get_download_info_interstitial_sign_error(monkeypatch):
+    """中转页验证失败（SignError 等）应映射为风控错误。"""
+    _install_fake(
+        monkeypatch,
+        _FakeResponse(
+            200,
+            text=_INTERSTITIAL_PAGE,
+            headers={"content-type": "text/html; charset=utf-8"},
+        ),
+        _FakeResponse(200, data={"zt": 1, "url": "?SignError"}),
+    )
+
+    p = LanzouProvider()
+    with pytest.raises(DomainError):
+        await p.get_download_info(None, "https://node.example.com/file/?ABC")
 
 
 @pytest.mark.asyncio

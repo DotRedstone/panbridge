@@ -95,14 +95,16 @@ _PLATFORM_PATTERNS: dict[str, tuple[set[str], Pattern[str]]] = {
             "lanzouy.com",
             "lanzoub.com",
             "lanzous.com",
+            "lanzouu.com",
             "ilanzou.com",
             "www.ilanzou.com",
         },
         # 蓝奏云短链路径为单段 key（如 /abc123 或 /iAbcDef），
         # 非 /s/<id> 形式，故单独匹配。
+        # 蓝奏云域名多变：前缀可为任意子域名（如 wwawu），后缀为
+        # lanzou 后接 1-2 个字母（lanzou/i/x/w/y/b/s/u/j 等）。
         re.compile(
-            r"https?://(?:www\.)?(?:lanzou|ilanzou)"
-            r"(?:i|x|w|y|b|s|p|o|q)?\.com/[A-Za-z0-9]{6,}"
+            r"https?://(?:[a-z0-9]+\.)?lanzou[a-z]{0,2}\.com/[A-Za-z0-9]{6,}"
         ),
     ),
     "guangya": (
@@ -126,6 +128,8 @@ _PASSWORD_LABEL = r"(?:提取码|提取碼|密码|密碼|验证码|验证碼|访
 _PASSWORD_PATTERNS: list[tuple[Pattern[str], int]] = [
     (re.compile(rf"{_PASSWORD_LABEL}\s*[:：]\s*([A-Za-z0-9]{{4,8}})"), 1),
     (re.compile(rf"{_PASSWORD_LABEL}\s*[是为]\s*([A-Za-z0-9]{{4,8}})"), 1),
+    # 紧凑写法：密码标签后直接跟提取码，无冒号（如「密码eke0」或「密码 eke0」）。
+    (re.compile(rf"{_PASSWORD_LABEL}[ \t]*([A-Za-z0-9]{{4,8}})"), 1),
     # 百度网盘：?pwd=xxxx 或 &pwd=xxxx
     (re.compile(r"[?&]pwd=([A-Za-z0-9]{4,8})"), 1),
     # 123 网盘：链接尾部 -xxxx 形式（/s/abc-1234），提取码为 1-4 位。

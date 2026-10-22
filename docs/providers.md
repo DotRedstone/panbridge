@@ -20,7 +20,7 @@
 |----------|--------|:---:|:---:|:---:|:---:|:---:|:---:|------|------|
 | `quark` | 夸克网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | **扫码登录** | ✅ 匿名解析真实验证 |
 | `aliyun` | 阿里云盘 | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | **扫码登录**（refresh_token） | ✅ 匿名解析真实验证 |
-| `lanzou` | 蓝奏云 | ✅ | ✅ | ❌(无账号) | ❌ | ✅ | - | 无需登录 | ✅ 解析+直链真实验证（下载节点风控） |
+| `lanzou` | 蓝奏云 | ✅ | ✅ | ❌(无账号) | ❌ | ✅ | - | 无需登录 | ✅ 解析+直链+下载真实验证（2026 新版协议 + WAF 导航头） |
 | `123` | 123 云盘 | ✅ | ✅ | ❌(未验证) | ✅ | ✅ | ✅ | **扫码登录**（token） | ✅ 匿名解析+登录态下载协议真实验证 |
 | `baidu` | 百度网盘 | 🟠(风控) | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 BDUSS Cookie | 🟠 匿名触发 9019 风控 |
 | `115` | 115 网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | **扫码登录**（Cookie） | ⚠️ 匿名解析+Mock |
@@ -114,7 +114,7 @@
 | 平台 | 验证内容 | 结果 |
 |------|---------|------|
 | `123` | 递归定位小文件 `LTSC_2024_26300.9711.txt`（810B）→ `/b/api/share/download/info` 解析直链 | 下载接口调通，服务器返回业务错误 `5112 分享方流量包不足`（证明协议正确，仅该分享流量耗尽，非协议错误） |
-| `lanzou` | 新协议直链解析 + acw_sc__v2 反爬 | 直链解析成功（三层反爬：acw_sc 自动解、验证页需图形验证码）；下载节点返回「验证码错误」风控 |
+| `lanzou` | 新协议直链解析 + acw_sc__v2 反爬 | 直链解析成功；2026-10 复验：新版内嵌 sign 协议（isngis）+ 下载节点 WAF 导航头方案，真实下载调通（Range 206 + ZIP 文件头） |
 
 > **123 云盘下载协议已完全验证**：`/gsb/s/share-key` 解析短码 →
 > `<uid>.share.123pan.cn/api/share/get` 列表 → 下载直链（etag/s3keyFlag/fileId）。
@@ -128,10 +128,19 @@
 >
 > **蓝奏云新协议已真实验证**：2025 年改版后，分享页不再含 `sign`，改为
 > `<iframe src="/fn?<sig>">` → `/fn` 页提供 `wp_sign/ajaxdata` → POST
-> `ajaxfile.php` 拿直链。同时分享页与下载节点均有 `acw_sc__v2` JS 反爬
-> （arg1 40 位重排 + XOR 密钥，已纯 Python 实现自动求解）。下载节点还叠加了
-> 「验证并下载」图形验证码风控，IDC 段触发后需人工验证，如实返回
-> `ACTION_REQUIRED`（非协议错误）。
+> `ajaxfile.php` 拿直链。2026 年再改版：分享页 sign 直接内嵌在 JS 变量
+> `isngis` 中（可能先赋空串再赋真值，取最后一个非空值），ajax 地址为
+> 绝对 URL，POST `{action, sign, kd, p}`，直链固定为 `dom + "/file/" + url`。
+> 分享页与下载节点均有 `acw_sc__v2` JS 反爬（arg1 40 位重排 + XOR 密钥，
+> 已纯 Python 实现自动求解）。
+>
+> **下载节点 WAF 关键结论（2026-10 真机实测）**：WAF 按请求头判定客户端——
+> ① 缺少浏览器导航头（`Sec-Fetch-*` + 完整 Accept）→ 弹挑战/「网络异常需
+> 验证」中转页；② UA 声称 Chrome 但 TLS 指纹是 Python（httpx）→ 一律挑战。
+> 因此下载节点请求**不伪装浏览器 UA、带完整导航头**即可直接拿到文件流
+> （Range 续传兼容）。`get_download_info` 返回的 headers 已含导航头。
+> 真机浏览器对照验证：浏览器访问同一 token 直接下载，纯 HTTP 侧修正导航
+> 头后同样直通，中转页 ajax.php 二次解析仅作兜底保留。
 
 ### 🟠 触发风控 / 需登录（如实返回错误码）
 
@@ -163,7 +172,7 @@
 
 | 平台 | 核心协议 | 待验证 |
 |------|---------|--------|
-| `lanzou` | 分享页 iframe /fn → ajaxfile.php → 直链 + acw_sc__v2 反爬 | 下载节点验证码风控 |
+| `lanzou` | 分享页 iframe /fn 或内嵌 isngis sign → ajaxfile.php → 直链 + acw_sc__v2 反爬 + 下载节点 WAF 导航头 | 已真实验证（2026-10） |
 | `123` | /gsb/s/share-key → /api/share/get → download/info | 转存（账号） |
 | `pikpak` | MD5链 captcha_sign → share/detail → file_info | 需住宅 IP |
 | `baidu` | wxlist → sharedownload(需Cookie) / 账号 /api/list+/api/download | Cookie 直链 |

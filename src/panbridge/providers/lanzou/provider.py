@@ -5,13 +5,19 @@
 工具（netdisk-fast-download 等），但代码为本项目自行编写。
 
 解析流程：
-1. GET 分享页面，从 HTML 提取：
-   - 文件名（`<title>` 或 `box` 区块）
-   - `sign` 与 `action` 参数（`action=downprocess&sign=xxx&p=` 片段）
-   - `ajaxm.php` 地址（页面内脚本 `url : '/ajaxm.php?file=...'`）
-2. POST ajaxm.php，data={action, sign, p, ves}，Referer 为分享页。
-3. 响应 JSON：`zt`(状态) / `dom`(下载域名) / `url`(路径) / `inf`(文件名)。
-   真实直链 = `dom + '/file/' + url`。
+1. GET 分享页面，按协议依次尝试：
+   - 新版内嵌 sign 协议（2026）：sign 在 JS 变量 `isngis` 里，ajax
+     地址为绝对 URL（apifile.woozooo.com/ajaxfile.php?file=xxx），
+     POST {action, sign, kd, p}；
+   - 新协议：iframe `/fn?<sig>` → wp_sign/ajaxdata → POST ajaxfile.php；
+   - 旧协议：`action=downprocess&sign=xxx` + `/ajaxm.php?file=...`。
+2. 响应 JSON：`zt`(状态) / `dom`(下载域名) / `url`(路径) / `inf`(文件名)。
+   中间直链 = `dom + '/file/' + url`（url 可能带 "?" 前缀）。
+3. 下载节点（*.dmpdmp.com 等）有 WAF：请求必须带浏览器导航头
+   （`_NAV_HEADERS`）才直接返回文件流，否则弹 acw_sc__v2 JS 挑战或
+   「网络异常需验证」中转页（后者尝试 POST /file/ajax.php 二次解析，
+   仍失败则返回 ACTION_REQUIRED）。get_download_info 返回的 headers
+   已含导航头，下载器直接复用即可。
 
 支持域名：lanzou.com 系及其子域名（lanzoui / lanzoux / lanzouw /
 lanzouy / lanzoub / lanzous 等），蓝奏云优享版 ilanzou.com 亦支持。
@@ -28,6 +34,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -65,6 +72,26 @@ _HEADERS = {
     ),
 }
 
+# 下载节点（*.dmpdmp.com 等）WAF 按请求头判定客户端，两条规则（2026-10 真机实测）：
+# 1. 缺少浏览器导航头（Sec-Fetch-* + 完整 Accept）→ 弹 acw_sc__v2 JS
+#    挑战或「网络异常需验证」中转页；带上导航头则直接放行文件流。
+# 2. UA 声称 Chrome 但 TLS 指纹是 Python（httpx）→ 一律挑战。因此
+#    下载节点请求/下载头**不要伪装浏览器 UA**，让 httpx 用默认 UA 即可
+#    （Range 续传不受影响，Accept 串必须完整含 image/avif 等片段）。
+_NAV_HEADERS = {
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8,"
+        "application/signed-exchange;v=b3;q=0.7"
+    ),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
 # 从分享页提取 sign 参数：action=downprocess&sign=xxx&p=（旧协议）
 _SIGN_RE = re.compile(r"action=downprocess&sign=([A-Za-z0-9_\-]+?)&p=")
 # 页面脚本中的 ajax 接口：url : '/ajaxm.php?file=123'（旧协议）
@@ -78,6 +105,18 @@ _KDNS_RE = re.compile(r"var\s+kdns\s*=\s*(\d+)")
 _DOMAIN_RE = re.compile(
     r"var\s+domain1\s*=\s*'(https://[^']+/ajaxfile\.php\?file=\d+)'"
 )
+# 新版内嵌 sign 协议（2026）：sign 直接写在 JS 变量 isngis 里，
+# ajax 地址是绝对 URL（apifile.woozooo.com/ajaxfile.php?file=xxx）。
+# 页面里 isngis 可能先赋空串再赋真值，取最后一个非空赋值。
+_ISNGIS_RE = re.compile(r"var\s+isngis\s*=\s*'([^']+)'")
+# 绝对 ajaxfile.php 地址（新版协议）
+_AJAXFILE_ABS_RE = re.compile(
+    r"url\s*:\s*'(https://[^']+/ajaxfile\.php\?file=\d+)'"
+)
+# 下载节点验证中转页（2026+）：GET dom/file/<url> 返回 HTML，页面 JS
+# 内嵌加密 file blob 与 sign，POST 同域 ajax.php（el=2/3）后返回真实直链。
+_INTERSTITIAL_FILE_RE = re.compile(r"'file':'([^']+)'")
+_INTERSTITIAL_SIGN_RE = re.compile(r"'sign':'([^']+)'")
 # 文件名（优先从标题/页面元素提取）
 _TITLE_RE = re.compile(
     r"<title>\s*(.*?)\s*[-–|]?\s*蓝奏云.*?</title>", re.S | re.I
@@ -282,32 +321,107 @@ class LanzouProvider(ShareProvider):
     ) -> dict[str, Any]:
         """返回直链下载信息。
 
-        `file_id` 若已是直链（含 `/file/` 路径）直接返回；否则视为
-        share key，重新解析。
+        `file_id` 若已是直链直接返回；否则视为 share key，重新解析。
+        直链有两种形式：
+        - 旧协议：`dom/file/<path>`（含 `/file/` 路径）；
+        - 新版内嵌 sign 协议（2026）：`dom/file/?<path>`（站点根 + query）。
+
+        两者都可能先返回下载节点验证中转页（HTML），需二次解析出
+        真实直链（见 `_resolve_download_url`）。
         """
-        is_direct = "/file/" in file_id
+        parsed = urlparse(file_id)
+        is_direct = "/file/" in file_id or (
+            parsed.scheme in ("http", "https") and parsed.path in ("", "/")
+        )
         if is_direct:
-            return {
-                "url": file_id,
-                "name": "",
-                "size": None,
-                "checksum": None,
-                "headers": {
-                    "User-Agent": _HEADERS["User-Agent"],
-                    "Referer": "https://www.lanzou.com/",
-                },
-            }
-        info = await self._fetch_file_info(file_id, None)
+            url = file_id
+            name = ""
+        else:
+            info = await self._fetch_file_info(file_id, None)
+            url = info["direct_url"]
+            name = info["name"] or f"lanzou-{file_id}.bin"
+
+        # 注意：解析客户端不带浏览器 UA（WAF 校验 UA 与 TLS 指纹一致性，
+        # 伪装 Chrome 反而被挑战；httpx 默认 UA + 导航头可直接放行）。
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            url = await self._resolve_download_url(client, url)
         return {
-            "url": info["direct_url"],
-            "name": info["name"] or f"lanzou-{file_id}.bin",
+            "url": url,
+            "name": name,
             "size": None,
             "checksum": None,
+            # 下载节点 WAF 要求导航头且 UA 与 TLS 一致：不返回 User-Agent，
+            # 下载器（httpx）用默认 UA 即可稳定拿到文件流。
             "headers": {
-                "User-Agent": _HEADERS["User-Agent"],
                 "Referer": "https://www.lanzou.com/",
+                **_NAV_HEADERS,
             },
         }
+
+    async def _resolve_download_url(
+        self, client: httpx.AsyncClient, url: str
+    ) -> str:
+        """解析下载节点直链，返回最终可下载 URL。
+
+        正常情况：带浏览器导航头（_NAV_HEADERS）GET 即返回文件流，
+        原样返回 URL。异常情况按层级回退：
+        1. acw_sc__v2 JS 挑战（arg1）→ 解挑战设置 cookie 后重试；
+        2. 「网络异常需验证」中转页 → 提取加密 file blob 与 sign，
+           POST 同域 /file/ajax.php（el=2/3）换真实直链，全部失败则
+           抛风控错误（ACTION_REQUIRED）。
+        """
+        get_headers = {"Referer": "https://www.lanzou.com/", **_NAV_HEADERS}
+        resp = await client.get(url, headers=get_headers)
+        if "text/html" not in resp.headers.get("content-type", ""):
+            return url
+        html = resp.text
+        # 下载节点同样有 acw_sc__v2 JS 反爬，需先解挑战再重试
+        acw = _solve_acw_sc_v2(html)
+        if acw:
+            client.cookies.set(
+                "acw_sc__v2", acw, domain=_cookie_domain(url)
+            )
+            resp = await client.get(url, headers=get_headers)
+            if "text/html" not in resp.headers.get("content-type", ""):
+                return url
+            html = resp.text
+        m_file = _INTERSTITIAL_FILE_RE.search(html)
+        m_sign = _INTERSTITIAL_SIGN_RE.search(html)
+        if not (m_file and m_sign):
+            # HTML 但非验证中转页（如直接可下载的提示页），原样返回
+            return url
+        origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        last_j: dict[str, Any] | None = None
+        for el in ("2", "3"):
+            r = await client.post(
+                f"{origin}/ajax.php",
+                data={
+                    "file": m_file.group(1),
+                    "el": el,
+                    "sign": m_sign.group(1),
+                },
+                headers={
+                    "Referer": url,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            try:
+                j = r.json()
+            except Exception:  # noqa: BLE001
+                continue
+            if j.get("zt") == 1 and j.get("url"):
+                final = j["url"]
+                if final.startswith("/"):
+                    final = origin + final
+                if final.startswith(("http://", "https://")):
+                    return final
+                # 形如 "?SignError" 的伪 URL：签名校验失败
+                last_j = j
+                continue
+            last_j = j
+        if last_j is not None:
+            raise self._map_error(200, last_j)
+        return url
 
     async def _fetch_file_info(
         self, share_id: str, password: str | None
@@ -331,6 +445,17 @@ class LanzouProvider(ShareProvider):
             if fn:
                 info = await self._parse_new_protocol(
                     client, url, fn.group(1), html, password
+                )
+                if info is not None:
+                    return info
+
+            # 新版内嵌 sign 协议（2026）：sign 在 JS 变量 isngis 里，
+            # ajax 地址是绝对 URL（apifile.woozooo.com/ajaxfile.php?file=）。
+            isngis = _last_nonempty(_ISNGIS_RE.findall(html))
+            ajax_abs = _AJAXFILE_ABS_RE.search(html)
+            if isngis and ajax_abs:
+                info = await self._parse_inline_sign_protocol(
+                    client, url, ajax_abs.group(1), isngis, html, password
                 )
                 if info is not None:
                     return info
@@ -470,6 +595,62 @@ class LanzouProvider(ShareProvider):
             or path
         )
         return {"direct_url": direct_url, "name": name}
+
+    async def _parse_inline_sign_protocol(
+        self,
+        client: httpx.AsyncClient,
+        share_url: str,
+        ajax_url: str,
+        sign: str,
+        share_html: str,
+        password: str | None,
+    ) -> dict[str, Any] | None:
+        """解析新版内嵌 sign 协议（2026），失败返回 None 以回退旧协议。
+
+        页面内 sign 直接写在 JS 变量 isngis 里，ajax 地址为绝对 URL
+        （apifile.woozooo.com/ajaxfile.php?file=xxx），POST 参数为
+        {action, sign, kd, p}。
+        """
+        data = {
+            "action": "downprocess",
+            "sign": sign,
+            "kd": "1",
+        }
+        if password:
+            data["p"] = password
+
+        resp = await client.post(
+            ajax_url,
+            data=data,
+            headers={
+                "Referer": share_url,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        try:
+            j = resp.json()
+        except Exception:  # noqa: BLE001
+            return None
+        if j.get("zt") != 1:
+            raise self._map_error(resp.status_code, j)
+        dom = j.get("dom", "")
+        path = j.get("url", "")
+        if not dom or not path:
+            return None
+        # 与页面 JS 一致：直链固定为 dom + "/file/" + url（url 可能带
+        # "?" 前缀，属正常形式）。得到的直链通常是下载节点验证中转页，
+        # 最终直链在 get_download_info 里二次解析。
+        direct_url = f"{dom}/file/{path}"
+        name = j.get("inf") or _extract_filename(share_html) or path
+        return {"direct_url": direct_url, "name": name}
+
+
+def _last_nonempty(values: list[str]) -> str | None:
+    """返回列表中最后一个非空字符串（用于 isngis 变量多次赋值）。"""
+    for v in reversed(values):
+        if v:
+            return v
+    return None
 
 
 def _extract_sign(html: str) -> str | None:
