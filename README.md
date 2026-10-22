@@ -89,6 +89,39 @@ uv run uvicorn panbridge.main:app --host 127.0.0.1 --port 8000
 uv run python -m panbridge.worker
 ```
 
+### Nix 打包部署（全 Nix 化）
+
+项目通过 **uv2nix** 把 `uv.lock` 里全部 PyPI 依赖（含 `quarkpan`/`aligo`/
+`p115client`/`cloud189` 等第三方网盘 SDK）转成 Nix derivation，可完全离线、
+可复现地构建出可运行的 Nix 包。适合在 NixOS 服务器上部署。
+
+```bash
+# 构建 Nix 包（产物含 panbridge CLI + panbridge-serve 启动入口）
+nix build
+
+# 直接运行 CLI（nix run 默认入口即 panbridge CLI）
+nix run . -- auth status
+
+# 直接启动 API 服务
+nix run .#serve -- --host 0.0.0.0 --port 8000
+
+# 查看构建产物
+./result/bin/panbridge --help
+./result/bin/panbridge-serve --host 0.0.0.0 --port 8000
+```
+
+安装到 NixOS 服务器（可在 `flake.nix` 的 inputs 里引入本仓库，然后）：
+
+```nix
+# 示例：在 NixOS configuration.nix 中引用
+environment.systemPackages = [ panbridge-flake.packages.${pkgs.system}.default ];
+```
+
+> 说明：`nix build` 构建的是**运行时虚拟环境整体**，包含 `bin/panbridge`
+> （CLI）、`bin/panbridge-serve`（API 服务入口）以及 `bin/python3.12` 等。
+> 若要在服务器上跑成常驻 systemd 服务，可基于 `panbridge-serve` 编写
+> NixOS module（见 `docs/operations.md` 的生产部署方向）。
+
 ### 配置
 
 通过环境变量配置，参见 `.env.example`。关键项：

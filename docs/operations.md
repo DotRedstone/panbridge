@@ -24,6 +24,50 @@ uv run python -m panbridge.worker
 
 主要部署方向为 **systemd 原生服务**（后续 M3 阶段完善 NixOS 模块）。
 
+### Nix 打包部署（推荐）
+
+项目已通过 **uv2nix** 全 Nix 化，可离线可复现地构建出 Nix 包：
+
+```fish
+# 构建 Nix 包（含 panbridge CLI + panbridge-serve 入口）
+nix build
+
+# 直接运行 CLI
+nix run . -- auth status
+
+# 直接启动 API 服务
+nix run .#serve -- --host 0.0.0.0 --port 8000
+
+# 产物入口
+./result/bin/panbridge        # CLI（扫码登录/状态查询等）
+./result/bin/panbridge-serve  # API 服务（uvicorn panbridge.main:app）
+```
+
+在 NixOS 服务器上引用本仓库 flake 即可安装：
+
+```nix
+{
+  inputs.panbridge.url = "path:/path/to/panbridge";
+  # 或 git 仓库 URL
+  # inputs.panbridge.url = "github:your/panbridge";
+
+  outputs = { panbridge, nixpkgs, ... }: {
+    nixosConfigurations.server = nixpkgs.lib.nixosSystem {
+      modules = [
+        {
+          environment.systemPackages = [
+            panbridge.packages.x86_64-linux.default
+          ];
+        }
+      ];
+    };
+  };
+}
+```
+
+> 后续可在 `flake.nix` 里补一个 `nixosModules.panbridge`，用 `panbridge-serve`
+> + `python -m panbridge.worker` 组成两个 systemd 服务，实现声明式常驻部署。
+
 ### 环境变量
 
 完整配置见 `.env.example`。
