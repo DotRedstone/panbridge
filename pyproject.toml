@@ -28,7 +28,11 @@ dependencies = [
     "cloud189>=0.1.6",
 ]
 
-[project.optional-dependencies]
+# 开发依赖放在 PEP 735 的 dependency-groups（而非 optional-dependencies）：
+# `uv sync` / `uv run` 默认就会同步 `dev` 组，README 里的
+# `uv sync --locked` + `uv run pytest` 才能直接跑通；
+# 生产安装用 `uv sync --no-dev` 排除。
+[dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",

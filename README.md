@@ -54,8 +54,11 @@
 # 进入开发环境（提供 python/uv/ruff/sqlite）
 nix develop
 
-# 按 uv.lock 安装 Python 依赖（不升级）
+# 按 uv.lock 安装 Python 依赖（不升级；dev 组 pytest/ruff 一并装好）
 uv sync --locked
+
+# 仅装运行时依赖（部署用）
+uv sync --locked --no-dev
 
 # 扫码登录（终端显示二维码，夸克 App 扫描后自动完成）
 uv run panbridge auth login
@@ -246,6 +249,10 @@ curl -O http://127.0.0.1:8000/v1/tasks/{task_id}/files/{filename}
 完整 API 合约见 [docs/api.md](docs/api.md)。
 
 ## 测试
+
+开发依赖（pytest / pytest-asyncio / ruff）在 `pyproject.toml` 的
+`[dependency-groups] dev` 中，`uv sync` 会默认安装；若之前用
+`uv sync --no-dev` 装过，跑测试前补一次 `uv sync` 即可。
 
 ```bash
 uv run pytest
