@@ -41,8 +41,6 @@ SUPPORTED_PROVIDERS = (
     "caiyun",
     "xunlei",
     "weiyun",
-    "guangya",
-    "wukong",
     "pikpak",
     "lanzou",
 )

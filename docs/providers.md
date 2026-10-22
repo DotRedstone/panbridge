@@ -1,7 +1,7 @@
 # Provider 说明与复用来源
 
-> 本文件由能力扫描 + 真实验证生成。**真实平台 14 个 + Mock 1 个 = 15 个已注册 Provider**。
-> （通过 `main.py` 的 `registry.register()` 实际调用统计：14 个真实 Provider + 1 个 MockProvider。）
+> 本文件由能力扫描 + 真实验证生成。**真实平台 12 个 + Mock 1 个 = 13 个已注册 Provider**。
+> （通过 `main.py` 的 `registry.register()` 实际调用统计：12 个真实 Provider + 1 个 MockProvider。）
 > 能力列以「实际方法实现」为准（自动扫描 `provider.py` 方法是否真实实现而非 `raise UNSUPPORTED_OPERATION`）。
 
 ## 五种验证状态（严格区分）
@@ -30,8 +30,6 @@
 | `uc` | UC 网盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | **扫码登录**（Cookie） | ⚠️ 扫码端点真实调通 |
 | `xunlei` | 迅雷云盘 | ❌(需登录) | ❌(需登录) | 🟡 | ✅ | ❌ | ✅ | 手工 refresh_token | ⚠️ 协议+Mock |
 | `weiyun` | 腾讯微云 | ✅ | ✅ | 🟡 | ✅ | ❌ | ❌ | 手工 skey Cookie | ⚠️ 协议+Mock |
-| `guangya` | 光鸭云盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 access_token | ⚠️ 协议+Mock |
-| `wukong` | 悟空网盘 | ✅ | ✅ | 🟡 | ✅ | ❌ | ✅ | 手工 Cookie/token | ⚠️ 协议+Mock |
 | `mock` | Mock | - | - | - | - | - | - | - | 测试用 |
 
 > **认证方式重要说明（如实）**：
@@ -56,7 +54,7 @@
 >   - `cloud189`：`panbridge auth login-password --provider cloud189`，交互式
 >     无回显输入账号密码，用 cloud189 SDK `login_by_password` 验证通过后把
 >     `{username, password}` 加密入库（扫码接口已失效，账号密码更可靠）。
-> - 其余平台（百度/天翼/移动/迅雷/微云/光鸭/悟空）扫码登录情况（如实）：
+> - 其余平台（百度/天翼/移动/迅雷/微云）扫码登录情况（如实）：
 >   - `baidu`：网页版 `/api/qrcode/create` 端点已废弃（返回 404），开放平台
 >     OAuth 设备码需自行注册应用并审核，暂无法无依赖扫码，保留手工 BDUSS 导入。
 >   - `cloud189`：扫码接口 `qrcodeLoginResult.action` 现返回 `QrCodeRollLoginFail`
@@ -65,7 +63,6 @@
 >     QQ 登录 Cookie 仅保活 48 小时，暂保留手工 skey Cookie 导入。
 >   - `caiyun`/`xunlei`：移动云盘 token 5 分钟失效需续票签名、迅雷需图形
 >     验证码签名，均无稳定公开扫码端点，保留手工凭据导入。
->   - `guangya`/`wukong`：未见公开扫码/OAuth 端点，保留手工导入。
 >   - 以上平台统一保留手工凭据导入路径：
 >     `panbridge auth import --provider <平台> --credential "<Cookie/token>"`。
 > - 不要把「需要手工 Cookie/token」的平台描述为「扫码即可使用」——
@@ -87,10 +84,8 @@
 | Provider | 转存返回新 fid | resolve 兜底 | 闭环状态 |
 |----------|:---:|:---:|------|
 | `aliyun` | ✅ | - | ✅ 完整 |
-| `guangya` | ✅ | - | ✅ 完整 |
 | `uc` | ✅ | - | ✅ 完整 |
 | `weiyun` | ✅ | - | ✅ 完整 |
-| `wukong` | ✅ | - | ✅ 完整 |
 | `xunlei` | ✅ | - | ✅ 完整 |
 | `quark` | ❌(异步) | ✅ | ✅ 完整 |
 | `pan115` | ❌(异步) | ✅ | ✅ 完整 |
@@ -147,7 +142,6 @@
 | 平台 | 现象 | 处理 |
 |------|------|------|
 | `baidu` | wxlist 返回 9019 `need verify` | 已识别为 `ACTION_REQUIRED`（风控），非协议错误 |
-| `guangya` | 分享端点返回 410 `code:128` | 分享失效或端点漂移，未确认 |
 | `pikpak` | 需住宅 IP，IDC 段被屏蔽返回 PROHIBITED | 已映射 RATE_LIMITED，需住宅 IP 才能真实下载 |
 
 ### ❌ 受阻平台（如实声明，不伪造支持）
@@ -180,8 +174,6 @@
 | `uc` | sharepage/detail → save → file/download | 转存/下载 |
 | `xunlei` | refresh_token+captcha → share → restore → files/{id} | 转存/下载 |
 | `weiyun` | WeiyunShareView(NoLogin) → WeiyunSharePartSaveData | 转存 |
-| `guangya` | /drive/v1/share → restore → files | 转存/下载 |
-| `wukong` | /api/v1/share/info → save → file/download | 转存/下载 |
 | `cloud189` | getShareInfoByCodeV2 → listShareDir → createBatchTask | 转存/下载 |
 
 ## 统一验收流程（批量验收脚本）
@@ -198,7 +190,7 @@ panbridge auth login --provider 115
 panbridge auth import --provider baidu --credential "BDUSS=..."
 #    aliyun: refresh_token；baidu: BDUSS；115: Cookie；
 #    cloud189: 账号密码/Cookie；caiyun: Authorization；uc: Cookie；
-#    xunlei: refresh_token；weiyun: skey；guangya: access_token；wukong: Cookie/token
+#    xunlei: refresh_token；weiyun: skey
 
 # 3. 提供分享链接，脚本自动判断「匿名直链下载」还是「先转存再下载」
 #    抽样验证（默认）：只下载第一个文件，验证链路是否打通
@@ -233,7 +225,7 @@ python scripts/acceptance.py --file links.txt
 | [aligo](https://github.com/foyoux/aligo) | MIT | PyPI 依赖 | ✅ 已采用 |
 | [p115client](https://github.com/ChenyangGao/p115client) | MIT | PyPI 依赖 | ✅ 已采用 |
 | [cloud189](https://github.com/s0urcelab/cloud189) | MIT | PyPI 依赖 | ✅ 已采用 |
-| [pan-relay](https://github.com/ucmao/pan-relay) | MIT | 仅参考协议 | ✅ 参考 UC/迅雷/移动/光鸭/悟空协议 |
+| [pan-relay](https://github.com/ucmao/pan-relay) | MIT | 仅参考协议 | ✅ 参考 UC/迅雷/移动协议 |
 | [netdisk-fast-download](https://github.com/qaiu/netdisk-fast-download) | MIT | 仅参考协议 | ✅ 参考蓝奏云/123/UC 协议 |
 | [cloud189-auto-save](https://github.com/josbu/cloud189-auto-save) | MIT | 仅参考协议 | ✅ 参考天翼云盘分享/转存协议 |
 | [baidu-parse](https://github.com/xb18/baidu-parse) | MIT | 仅参考协议 | ✅ 参考百度 wxlist/sharedownload |

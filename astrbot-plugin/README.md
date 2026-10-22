@@ -77,7 +77,7 @@ git clone <本仓库> AstrBot/data/plugins/astrbot_plugin_panbridge
 |------|---------|------|
 | 夸克 / 阿里 / 115 / 123 / UC | 扫码 | `/pb login <provider>` |
 | 天翼云盘 | 账号密码 | 在 PanBridge 主机上 `uv run panbridge auth login-password` |
-| 百度 / 迅雷 / 微云 / 移动 / 光鸭 / 悟空 | 手工凭据 | `uv run panbridge auth import --provider <平台>` |
+| 百度 / 迅雷 / 微云 / 移动 | 手工凭据 | `uv run panbridge auth import --provider <平台>` |
 
 ## 说明
 

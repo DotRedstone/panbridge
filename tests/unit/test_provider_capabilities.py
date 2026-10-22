@@ -62,7 +62,6 @@ def _all_providers():
     from panbridge.providers.baidu.provider import BaiduProvider
     from panbridge.providers.caiyun.provider import CaiyunProvider
     from panbridge.providers.cloud189.provider import Cloud189Provider
-    from panbridge.providers.guangya.provider import GuangyaProvider
     from panbridge.providers.lanzou.provider import LanzouProvider
     from panbridge.providers.pan115.provider import Pan115Provider
     from panbridge.providers.pan123.provider import Pan123Provider
@@ -70,7 +69,6 @@ def _all_providers():
     from panbridge.providers.quark.provider import QuarkProvider
     from panbridge.providers.uc.provider import UcProvider
     from panbridge.providers.weiyun.provider import WeiyunProvider
-    from panbridge.providers.wukong.provider import WukongProvider
     from panbridge.providers.xunlei.provider import XunleiProvider
 
     return [
@@ -78,7 +76,6 @@ def _all_providers():
         ("baidu", BaiduProvider(cipher=None)),
         ("caiyun", CaiyunProvider(cipher=None)),
         ("cloud189", Cloud189Provider(cipher=None)),
-        ("guangya", GuangyaProvider(cipher=None)),
         ("lanzou", LanzouProvider()),
         ("115", Pan115Provider(cipher=None)),
         ("123", Pan123Provider(cipher=None)),
@@ -86,15 +83,14 @@ def _all_providers():
         ("quark", QuarkProvider(cipher=None)),
         ("uc", UcProvider(cipher=None)),
         ("weiyun", WeiyunProvider(cipher=None)),
-        ("wukong", WukongProvider(cipher=None)),
         ("xunlei", XunleiProvider(cipher=None)),
     ]
 
 
-def test_provider_count_is_14():
-    """实际注册的真实 Provider 应为 14 个（不含 Mock）。"""
+def test_provider_count_is_12():
+    """实际注册的真实 Provider 应为 12 个（不含 Mock）。"""
     providers = _all_providers()
-    assert len(providers) == 14
+    assert len(providers) == 12
 
 
 @pytest.mark.parametrize(
