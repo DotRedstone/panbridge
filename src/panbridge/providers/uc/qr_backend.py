@@ -154,7 +154,8 @@ class UcQrBackend(QrAuthBackend):
         if data.get("status") != 2000000:
             raise DomainError(
                 ErrorCode.INTERNAL_ERROR,
-                f"uc getTokenForQrcodeLogin failed: {data.get('message') or data.get('status')}",
+                "uc getTokenForQrcodeLogin failed: "
+                f"{data.get('message') or data.get('status')}",
                 retryable=True,
             )
         token = data.get("data", {}).get("members", {}).get("token")

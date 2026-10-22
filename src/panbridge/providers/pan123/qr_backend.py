@@ -66,7 +66,8 @@ class Pan123QrBackend(QrAuthBackend):
         if data.get("code") not in (0, 200):
             raise DomainError(
                 ErrorCode.INTERNAL_ERROR,
-                f"123 qr-code generate failed: {data.get('message') or data.get('code')}",
+                "123 qr-code generate failed: "
+                f"{data.get('message') or data.get('code')}",
                 retryable=True,
             )
         inner = data.get("data") or {}

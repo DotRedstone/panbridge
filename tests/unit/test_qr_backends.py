@@ -390,7 +390,6 @@ async def test_pan123_backend_finish_before_confirm(monkeypatch):
     import httpx
 
     from panbridge.domain.errors import DomainError, ErrorCode
-
     from panbridge.providers.pan123.qr_backend import Pan123QrBackend
 
     fake = _Fake123Client()
@@ -473,7 +472,6 @@ class _FakeUcClient:
 @pytest.mark.asyncio
 async def test_uc_backend_flow(monkeypatch):
     import panbridge.providers.uc.qr_backend as uc_mod
-
     from panbridge.providers.uc.qr_backend import UcQrBackend
 
     fake = _FakeUcClient()
@@ -503,9 +501,7 @@ async def test_uc_backend_flow(monkeypatch):
 @pytest.mark.asyncio
 async def test_uc_backend_finish_before_confirm(monkeypatch):
     import panbridge.providers.uc.qr_backend as uc_mod
-
     from panbridge.domain.errors import DomainError, ErrorCode
-
     from panbridge.providers.uc.qr_backend import UcQrBackend
 
     fake = _FakeUcClient()
@@ -522,7 +518,6 @@ async def test_uc_backend_finish_before_confirm(monkeypatch):
 async def test_uc_backend_expired_status(monkeypatch):
     """UC 扫码状态 50004002 映射为 expired。"""
     import panbridge.providers.uc.qr_backend as uc_mod
-
     from panbridge.providers.uc.qr_backend import UcQrBackend
 
     class _ExpiredClient(_FakeUcClient):

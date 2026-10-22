@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from panbridge.domain.errors import DomainError, ErrorCode
+from panbridge.domain.models import Account
 from panbridge.providers.pan123.provider import (
     Pan123Provider,
     _sign_path,
@@ -314,8 +315,6 @@ def test_map_share_item_preserves_download_metadata():
 
 
 def _authed_account(cipher) -> Account:
-    from panbridge.domain.models import Account
-
     token = cipher.encrypt("test-access-token")
     return Account(
         id="a", provider="123", label="x", encrypted_credential=token
