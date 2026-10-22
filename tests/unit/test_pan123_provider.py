@@ -200,7 +200,7 @@ async def test_resolve_download_url_base64(monkeypatch):
             {
                 "code": 0,
                 "data": {
-                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                    "DownloadUrl": f"https://yun.123pan.com/x?params={encoded}"
                 },
             },
         )
@@ -255,7 +255,7 @@ async def test_get_share_download_info_anonymous(monkeypatch):
             {
                 "code": 0,
                 "data": {
-                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                    "DownloadUrl": f"https://yun.123pan.com/x?params={encoded}"
                 },
             },
         ),
@@ -344,7 +344,7 @@ async def test_get_share_download_info_authed(monkeypatch):
             {
                 "code": 0,
                 "data": {
-                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                    "DownloadUrl": f"https://yun.123pan.com/x?params={encoded}"
                 },
             },
         ),
@@ -433,7 +433,7 @@ async def test_get_share_download_info_anonymous_still_works(monkeypatch):
             {
                 "code": 0,
                 "data": {
-                    "DownloadURL": f"https://yun.123pan.com/x?params={encoded}"
+                    "DownloadUrl": f"https://yun.123pan.com/x?params={encoded}"
                 },
             },
         ),

@@ -48,11 +48,11 @@ from panbridge.providers.base import ShareProvider
 # 分享短码解析域名（/gsb/s/share-key）
 _SHARE_ROOT = "https://www.123pan.cn"
 _GSB_SHARE_KEY = _SHARE_ROOT + "/gsb/s/share-key"
-# 下载直链接口使用 yun.123pan.com 的 /b/api（与文件列表个性化域名不同）。
-# 文件列表用 <uid>.share.123pan.cn/api/share/get，下载用此 BApi。
+# 下载直链接口与账号接口（需登录）都走 yun.123pan.com 的 /b/api。
+# 文件列表用 <uid>.share.123pan.cn/api/share/get，下载/账号用此 BApi。
+# 参考 AList drivers/123/util.go：MainApi = BApi = https://yun.123pan.com/b/api
 _BApi = "https://yun.123pan.com/b/api"
-# 账号接口（需登录）使用 www.123pan.com/api（独立于分享 /b/api）。
-_AApi = "https://www.123pan.com/api"
+_AApi = _BApi
 
 _HEADERS = {
     "origin": "https://yun.123pan.com",
@@ -496,7 +496,7 @@ class Pan123Provider(ShareProvider):
         data = resp.json()
         if data.get("code") not in (0, 200):
             raise self._map_error(data)
-        download_url = (data.get("data") or {}).get("DownloadURL", "")
+        download_url = (data.get("data") or {}).get("DownloadUrl", "")
         if not download_url:
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,
@@ -545,7 +545,7 @@ class Pan123Provider(ShareProvider):
         data = resp.json()
         if data.get("code") not in (0, 200):
             raise self._map_error(data)
-        download_url = (data.get("data") or {}).get("DownloadURL", "")
+        download_url = (data.get("data") or {}).get("DownloadUrl", "")
         if not download_url:
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,
@@ -593,7 +593,7 @@ class Pan123Provider(ShareProvider):
         data = resp.json()
         if data.get("code") not in (0, 200):
             raise self._map_error(data)
-        download_url = data.get("data", {}).get("DownloadURL", "")
+        download_url = data.get("data", {}).get("DownloadUrl", "")
         if not download_url:
             raise DomainError(
                 ErrorCode.DOWNLOAD_FAILED,
