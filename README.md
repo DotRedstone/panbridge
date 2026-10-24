@@ -190,15 +190,17 @@ uv run panbridge auth logout --provider quark
 在 QQ / 微信 / Telegram / 钉钉 / 飞书等平台调用 PanBridge 服务：
 
 - 把 `astrbot-plugin/` 目录放入 AstrBot 的 `data/plugins/`，在管理面板启用并
-  配置 `base_url`（PanBridge 服务地址）与 `api_key`。
-- 在机器人对话中直接发送网盘链接即自动解析，或用指令转存/下载/扫码登录：
+  配置 `base_url`、`api_key` 与**授权白名单**（插件默认拒绝所有用户，
+  登录/账号操作仅管理员，详见
+  [`docs/bot-integration.md`](docs/bot-integration.md)）。
+- 白名单用户通过指令使用（直接发送链接的被动识别默认关闭）：
 
 ```
 /pb <链接>             解析分享
 /pb download <链接>    下载
-/pb save <链接>        转存
-/pb status [id]        查任务
-/pb login <provider>   扫码登录（发二维码图片）
+/pb save <链接>        转存（默认关闭）
+/pb status [id]        查任务（仅自己的任务）
+/pb login <provider>   扫码登录（仅管理员）
 ```
 
 详见 [astrbot-plugin/README.md](astrbot-plugin/README.md)。

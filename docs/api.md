@@ -6,6 +6,10 @@
 
 通过 `X-API-Key` 请求头鉴权（当 `PANBRIDGE_API_KEY` 已配置时）。未配置时本机免鉴权（仅限开发）。
 
+> `X-API-Key` 是**服务间通道凭据，不是用户身份**：本服务没有用户概念，
+> 终端用户的权限判定在机器人插件层完成（见
+> [`bot-integration.md`](bot-integration.md)）。
+
 ## 错误结构
 
 统一错误响应：
