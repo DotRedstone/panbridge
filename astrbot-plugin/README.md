@@ -50,6 +50,7 @@ git clone <本仓库> AstrBot/data/plugins/astrbot_plugin_panbridge
 `main.py`、`utils.py`、`panbridge_client.py`、`metadata.yaml`、`requirements.txt`。
 
 然后在 AstrBot 管理面板的「扩展 → 插件」中启用本插件，并配置：
+配置表单由同目录的 `_conf_schema.json` 提供；安装时须一并复制。
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
