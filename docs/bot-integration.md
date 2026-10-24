@@ -44,7 +44,7 @@
 | 字段 | 来源 | 虚构样例 | 说明 |
 |------|------|---------|------|
 | `platform` | `event.get_platform_id()` 的实例 ID | `course-qq-official` | 缺失时拒绝；平台类型名不能代替实例 ID |
-| `bot_id` | 机器人实例（`bot_id` / `message_obj.self_id`） | `bot-001` | 同一平台可挂多个机器人；可用 `allowed_bots` 限定 |
+| `bot_id` | `event.get_self_id()`（可能为空） | `bot-001` | QQ 官方私聊若为空，仍以平台实例 ID 隔离；配置 `allowed_bots` 时空值会被拒绝 |
 | `openid` | 平台侧用户 OpenID（`get_sender_id()`） | `OPENID_ABC123` | QQ 官方平台为平台映射 ID，不是 QQ 号原文 |
 | `scope` | 群 ID（`get_group_id()`）或私聊 | `group:G_10001` / `c2c` | 群聊场景需群白名单 |
 
