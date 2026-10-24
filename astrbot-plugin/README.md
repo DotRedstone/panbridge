@@ -56,7 +56,7 @@ git clone <本仓库> AstrBot/data/plugins/astrbot_plugin_panbridge
 | `base_url` | PanBridge 服务地址 | `http://127.0.0.1:8000` |
 | `api_key` | 服务端 `PANBRIDGE_API_KEY`（服务间通道鉴权，**不是**用户身份） | 空 |
 | `default_provider` | 登录缺省平台 | `quark` |
-| `admins` | 管理员身份键列表（`平台实例:OpenID`），如 `["qq_official:OPENID_ABC"]` | 空（全拒绝） |
+| `admins` | 管理员身份键列表（`平台实例:OpenID`），如 `["course-qq-official:OPENID_ABC"]` | 空（全拒绝） |
 | `users` | 普通朋友身份键列表 | 空 |
 | `groups` | 允许使用网盘功能的群列表（`平台实例:群ID`） | 空（仅私聊） |
 | `allowed_bots` | 允许接入的机器人实例 ID | 空（不限制） |

@@ -43,13 +43,13 @@
 
 | 字段 | 来源 | 虚构样例 | 说明 |
 |------|------|---------|------|
-| `platform` | 适配器实例（`platform_id`，退回 `platform` 类型名） | `qq_official` | 平台实例；同一用户编号跨平台实例视为**不同身份** |
+| `platform` | `event.get_platform_id()` 的实例 ID | `course-qq-official` | 缺失时拒绝；平台类型名不能代替实例 ID |
 | `bot_id` | 机器人实例（`bot_id` / `message_obj.self_id`） | `bot-001` | 同一平台可挂多个机器人；可用 `allowed_bots` 限定 |
 | `openid` | 平台侧用户 OpenID（`get_sender_id()`） | `OPENID_ABC123` | QQ 官方平台为平台映射 ID，不是 QQ 号原文 |
 | `scope` | 群 ID（`get_group_id()`）或私聊 | `group:G_10001` / `c2c` | 群聊场景需群白名单 |
 
-身份匹配键 = `平台实例:OpenID`（如 `qq_official:OPENID_ABC123`）。
-群白名单键 = `平台实例:群ID`（如 `qq_official:G_10001`）。
+身份匹配键 = `平台实例:OpenID`（如 `course-qq-official:OPENID_ABC123`）。
+群白名单键 = `平台实例:群ID`（如 `course-qq-official:G_10001`）。
 
 ## 4. 授权接口
 
@@ -126,9 +126,9 @@ base_url: "http://127.0.0.1:8000"
 api_key: "<PANBRIDGE_API_KEY>"        # 服务间通道
 default_provider: "quark"
 # 授权（全部虚构；身份键 = 平台实例:OpenID）
-admins: ["qq_official:OPENID_ABC123"]
-users:  ["qq_official:OPENID_DEF456", "qq_official:OPENID_GHI789"]
-groups: ["qq_official:G_10001"]       # 空 = 仅私聊
+admins: ["course-qq-official:OPENID_ABC123"]
+users:  ["course-qq-official:OPENID_DEF456", "course-qq-official:OPENID_GHI789"]
+groups: ["course-qq-official:G_10001"]       # 空 = 仅私聊
 allowed_bots: ["bot-001"]             # 空 = 不限制
 enable_save: false                    # 权限定义明确前保持 false
 auto_detect_links: false              # 直接发链接默认关闭
