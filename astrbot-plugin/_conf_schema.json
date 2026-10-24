@@ -1,0 +1,48 @@
+{
+  "base_url": {
+    "description": "PanBridge 后端地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8000"
+  },
+  "api_key": {
+    "description": "PanBridge 服务间 API 密钥",
+    "type": "string",
+    "secret": true,
+    "default": ""
+  },
+  "default_provider": {
+    "description": "扫码登录时的默认网盘平台",
+    "type": "string",
+    "default": "quark"
+  },
+  "admins": {
+    "description": "管理员身份键，格式为平台实例 ID:用户 OpenID",
+    "type": "list",
+    "default": []
+  },
+  "users": {
+    "description": "普通授权用户的身份键，格式为平台实例 ID:用户 OpenID",
+    "type": "list",
+    "default": []
+  },
+  "groups": {
+    "description": "允许使用网盘功能的群，格式为平台实例 ID:群 OpenID",
+    "type": "list",
+    "default": []
+  },
+  "allowed_bots": {
+    "description": "允许的机器人实例 ID；QQ 官方私聊可能为空，缺省不限制",
+    "type": "list",
+    "default": []
+  },
+  "enable_save": {
+    "description": "开放转存到已登录账号，默认关闭",
+    "type": "bool",
+    "default": false
+  },
+  "auto_detect_links": {
+    "description": "被动识别普通消息中的网盘链接，默认关闭",
+    "type": "bool",
+    "default": false
+  }
+}

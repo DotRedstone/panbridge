@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -73,6 +74,15 @@ def test_no_config_denies_everyone():
         d = az.authorize(ident, Capability.INSPECT, ident.scope)
         assert not d.allowed
         assert d.reason == DENY_NO_CONFIG
+
+
+def test_astrbot_schema_exposes_default_closed_authentication():
+    schema = json.loads((PLUGIN_DIR / "_conf_schema.json").read_text())
+    for key in ("admins", "users", "groups", "allowed_bots"):
+        assert schema[key]["default"] == []
+    assert schema["enable_save"]["default"] is False
+    assert schema["auto_detect_links"]["default"] is False
+    assert schema["api_key"]["secret"] is True
 
 
 def test_stranger_denied_by_default():
