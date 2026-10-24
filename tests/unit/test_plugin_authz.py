@@ -36,6 +36,7 @@ from authz import (  # noqa: E402
     TaskOwnership,
     build_identity,
     can_manage_task,
+    identity_from_event,
 )
 from utils import find_pan_link, parse_args  # noqa: E402
 
@@ -111,6 +112,34 @@ def test_bot_instance_allowlist():
     d = az.authorize(OTHER_BOT, Capability.INSPECT, OTHER_BOT.scope)
     assert not d.allowed
     assert d.reason == DENY_BOT_NOT_ALLOWED
+
+
+def test_event_identity_requires_platform_instance_id():
+    class Event:
+        platform = "qq_official"  # 平台类型名不能替代实例 ID。
+
+        def get_platform_id(self):
+            return "course-qq-official"
+
+        def get_sender_id(self):
+            return "OPENID_FRIEND"
+
+        def get_group_id(self):
+            return ""
+
+        def get_self_id(self):
+            raise AttributeError("QQ 官方私聊没有稳定的 self_id")
+
+    identity = identity_from_event(Event())
+    assert identity.platform == "course-qq-official"
+    assert identity.bot_id == ""
+    assert identity.openid == "OPENID_FRIEND"
+
+    event = Event()
+    event.get_platform_id = lambda: ""
+    missing = identity_from_event(event)
+    az = ConfigAuthorizer({"users": [":OPENID_FRIEND"]})
+    assert not az.authorize(missing, Capability.INSPECT).allowed
 
 
 # ----------------------------------------------------------------------

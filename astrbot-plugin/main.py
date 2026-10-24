@@ -40,8 +40,8 @@ from .authz import (
     LoginSessionRegistry,
     TaskOwnership,
     TrustedIdentity,
-    build_identity,
     can_manage_task,
+    identity_from_event,
 )
 from .panbridge_client import PanBridgeClient, PanBridgeError
 from .utils import find_pan_link, format_inspect, format_task, parse_args
@@ -115,19 +115,7 @@ class PanBridgePlugin(Star):
         只读平台侧字段（平台实例 / 机器人实例 / OpenID / 群 ID），
         不读昵称、不解析消息正文里的自称。
         """
-        # 平台实例优先用 platform_id（适配器实例 ID），退回平台类型名
-        platform = str(
-            getattr(event, "platform_id", "") or getattr(event, "platform", "") or ""
-        )
-        bot_id = str(getattr(event, "bot_id", "") or "")
-        if not bot_id:
-            message_obj = getattr(event, "message_obj", None)
-            bot_id = str(getattr(message_obj, "self_id", "") or "")
-        get_sender = getattr(event, "get_sender_id", None)
-        openid = str(get_sender() or "") if callable(get_sender) else ""
-        get_group = getattr(event, "get_group_id", None)
-        group_id = str(get_group() or "") if callable(get_group) else ""
-        return build_identity(platform, bot_id, openid, group_id or None)
+        return identity_from_event(event)
 
     @staticmethod
     def _scene_of(identity: TrustedIdentity) -> str:

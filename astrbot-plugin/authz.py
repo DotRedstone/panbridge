@@ -49,7 +49,7 @@ class TrustedIdentity:
     """可信平台身份。
 
     四个字段全部来自事件对象上的平台侧数据，用于互相区分：
-      - platform:  平台实例（如 ``qq_official``），同一用户编号在不同
+      - platform:  平台实例 ID（如 ``course-qq-official``），同一用户编号在不同
         平台实例上是**不同身份**；
       - bot_id:    机器人实例 ID（同一平台可挂多个机器人）；
       - openid:    平台侧用户 OpenID（不是 QQ 号原文，官方平台为映射 ID）；
@@ -101,6 +101,22 @@ def build_identity(
         openid=openid or "",
         scope=scope,
     )
+
+
+def identity_from_event(event) -> TrustedIdentity:
+    """仅从 AstrBot 结构化事件提取身份，缺失实例 ID 时保持空值并拒绝。"""
+    try:
+        platform = str(event.get_platform_id() or "").strip()
+        openid = str(event.get_sender_id() or "").strip()
+        group_id = str(event.get_group_id() or "").strip()
+    except Exception:
+        return build_identity("", "", "")
+    try:
+        bot_id = str(event.get_self_id() or "").strip()
+    except Exception:
+        # QQ 官方私聊不保证提供 self_id；平台实例 ID 是首要来源边界。
+        bot_id = ""
+    return build_identity(platform, bot_id, openid, group_id or None)
 
 
 @dataclass
@@ -162,6 +178,8 @@ class ConfigAuthorizer:
         """
         if not self.configured:
             return Decision(False, DENY_NO_CONFIG)
+        if not identity.platform or not identity.openid:
+            return Decision(False, DENY_NOT_AUTHORIZED)
         if self.allowed_bots and identity.bot_id not in self.allowed_bots:
             return Decision(False, DENY_BOT_NOT_ALLOWED)
         role = self.role_of(identity)
