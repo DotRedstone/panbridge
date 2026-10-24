@@ -1,14 +1,36 @@
 """AstrBot 插件纯函数工具，不依赖 astrbot 框架，便于单元测试。
 
-包含参数解析、消息格式化、文件大小格式化等无副作用函数。
+包含参数解析、消息格式化、文件大小格式化、网盘链接识别等无副作用函数。
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import Any
 
 PREFIX = "pb"
+
+# 网盘分享链接（被动识别用；仅在 auto_detect_links 开启且授权通过时使用）
+_LINK_RE = re.compile(
+    r"https?://[^\s]+(?:"
+    r"quark\.cn|aliyundrive\.com|alipan\.com|123pan\.com|123pan\.cn|"
+    r"baidu\.com|115\.com|uc\.cn|xunlei\.com|weiyun\.com|lanzou|"
+    r"woozooo\.com|189\.cn|cloud\.189\.cn|lanzouu\.com"
+    r")[^\s]*"
+)
+
+
+def find_pan_link(text: str) -> str | None:
+    """从消息文本中识别网盘分享链接；无匹配返回 None。
+
+    注意：被动识别默认关闭（``auto_detect_links``），且开启后仍需
+    授权与会话范围检查通过才处理；其余消息一律放行给其他插件。
+    """
+    if not text:
+        return None
+    m = _LINK_RE.search(text)
+    return m.group(0) if m else None
 
 
 def parse_args(text: str) -> list[str]:

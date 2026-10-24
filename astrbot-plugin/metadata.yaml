@@ -2,7 +2,7 @@ name: astrbot_plugin_panbridge
 display_name: PanBridge 网盘助手
 desc: 通过 AstrBot 机器人调用 PanBridge 多网盘转存/下载服务：提交分享链接即可解析、转存、下载，并支持扫码登录网盘账号。
 short_desc: 机器人一键解析/转存/下载各类网盘分享链接
-version: v1.0.0
+version: v1.1.0
 author: PanBridge
 repo: https://github.com/panbridge/astrbot-plugin-panbridge
 astrbot_version: ">=4.5.0,<5"
