@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import asyncio
 
-from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import MessageChain, Plain
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 
 from .authz import (
