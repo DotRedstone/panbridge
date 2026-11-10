@@ -105,8 +105,8 @@ def build_auth_service(
 ) -> AuthService | None:
     """构建认证服务；无 cipher（未配置主密钥）时返回 None。
 
-    扫码登录支持夸克、阿里云盘、115 网盘、123 云盘四个平台；其余平台需
-    手工导入凭据（见 docs/providers.md）。
+    扫码登录支持夸克、阿里云盘、115 网盘、123 云盘、UC 网盘五个平台；
+    其余平台需手工导入凭据（见 docs/providers.md）。
     """
     if cipher is None:
         return None
