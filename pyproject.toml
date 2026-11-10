@@ -32,11 +32,15 @@ dependencies = [
 # `uv sync` / `uv run` 默认就会同步 `dev` 组，README 里的
 # `uv sync --locked` + `uv run pytest` 才能直接跑通；
 # 生产安装用 `uv sync --no-dev` 排除。
+#
+# 注意：ruff 不在此声明，改由 devShell（flake.nix）提供 Nix 编译版。
+# 若声明在这里，`uv sync` 会把 manylinux 编译的 ruff 装进 .venv/bin，
+# NixOS 无法运行（动态链接器指向 /lib64/ld-linux-x86-64.so.2），
+# 导致 `uv run ruff` 报 "Could not start dynamically linked executable"。
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
-    "ruff>=0.4",
 ]
 
 [project.scripts]

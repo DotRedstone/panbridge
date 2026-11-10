@@ -54,7 +54,7 @@
 # 进入开发环境（提供 python/uv/ruff/sqlite）
 nix develop
 
-# 按 uv.lock 安装 Python 依赖（不升级；dev 组 pytest/ruff 一并装好）
+# 按 uv.lock 安装 Python 依赖（不升级；dev 组 pytest 一并装好，ruff 由 devShell 提供）
 uv sync --locked
 
 # 仅装运行时依赖（部署用）
@@ -253,13 +253,15 @@ curl -O http://127.0.0.1:8000/v1/tasks/{task_id}/files/{filename}
 
 ## 测试
 
-开发依赖（pytest / pytest-asyncio / ruff）在 `pyproject.toml` 的
+开发依赖（pytest / pytest-asyncio）在 `pyproject.toml` 的
 `[dependency-groups] dev` 中，`uv sync` 会默认安装；若之前用
 `uv sync --no-dev` 装过，跑测试前补一次 `uv sync` 即可。
+`ruff` 不装在 venv 里，而是由 Nix devShell 提供（Nix 编译版），
+避免 `uv run ruff` 在 NixOS 上运行 manylinux 二进制报错。
 
 ```bash
 uv run pytest
-uv run ruff check src tests
+ruff check src tests
 ```
 
 ### 真实夸克端到端测试（可选，需要真实账号）
