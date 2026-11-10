@@ -41,8 +41,8 @@
     "default": false
   },
   "auto_detect_links": {
-    "description": "被动识别普通消息中的网盘链接，默认关闭",
+    "description": "授权用户直接发送网盘分享链接（或含提取码文案）时自动解析预览，默认开启；仅预览不下载/转存",
     "type": "bool",
-    "default": false
+    "default": true
   }
 }

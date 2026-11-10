@@ -193,10 +193,11 @@ uv run panbridge auth logout --provider quark
   配置 `base_url`、`api_key` 与**授权白名单**（插件默认拒绝所有用户，
   登录/账号操作仅管理员，详见
   [`docs/bot-integration.md`](docs/bot-integration.md)）。
-- 白名单用户通过指令使用（直接发送链接的被动识别默认关闭）：
+- 白名单用户**直接发送分享链接**（或含提取码的完整文案）即自动解析并
+  返回简洁预览（**只预览，不自动下载/转存**）；`/pb` 为高级操作入口：
 
 ```
-/pb <链接>             解析分享
+直接发 <链接>         自动识别平台、解析并返回简洁预览（仅预览）
 /pb download <链接>    下载
 /pb save <链接>        转存（默认关闭）
 /pb status [id]        查任务（仅自己的任务）

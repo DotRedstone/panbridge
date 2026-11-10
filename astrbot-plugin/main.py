@@ -20,9 +20,10 @@
     /pb providers             列出支持的网盘平台
     /pb help                  帮助
 
-直接发送网盘链接的被动识别**默认关闭**（auto_detect_links），开启后也仅在
-授权与会话范围检查通过时处理；未授权/不匹配的消息一律静默放行，不吞掉
-作业插件或其他插件的任何消息。
+直接发送网盘链接（或含提取码的完整文案）的被动识别**默认开启**
+（auto_detect_links），授权用户直接发链接即自动解析并返回简洁预览，
+**只预览、不下载/转存**；解析成功会消费该事件，未授权/不匹配的消息
+一律静默放行，不吞掉作业插件或其他插件的任何消息。
 """
 
 from __future__ import annotations
@@ -44,7 +45,14 @@ from .authz import (
     identity_from_event,
 )
 from .panbridge_client import PanBridgeClient, PanBridgeError
-from .utils import find_pan_link, format_inspect, format_task, parse_args
+from .utils import (
+    classify_inspect_error,
+    find_pan_link,
+    format_inspect,
+    format_task,
+    inspect_followup_text,
+    parse_args,
+)
 
 # 指令前缀
 PREFIX = "pb"
@@ -86,7 +94,8 @@ class PanBridgePlugin(Star):
       - groups: 允许使用的群列表（"平台实例:群ID"；空 = 仅私聊）
       - allowed_bots: 允许接入的机器人实例 ID（空 = 不限制）
       - enable_save: 是否开放转存（默认 False）
-      - auto_detect_links: 直接发链接的被动识别（默认 False）
+      - auto_detect_links: 直接发链接的被动识别（默认 True；授权用户直接发
+        链接/含提取码文案即自动预览，仅预览不下载/转存）
     """
 
     def __init__(self, context: Context, config: dict | None = None):
@@ -95,7 +104,7 @@ class PanBridgePlugin(Star):
         self.base_url = config.get("base_url", "http://127.0.0.1:8000")
         self.api_key = config.get("api_key", "")
         self.default_provider = config.get("default_provider", "quark")
-        self.auto_detect_links = bool(config.get("auto_detect_links", False))
+        self.auto_detect_links = bool(config.get("auto_detect_links", True))
         self.authz = ConfigAuthorizer(config)
         self.client = PanBridgeClient(self.base_url, self.api_key)
         # 任务归属登记（内存态；重启后仅管理员可操作存量任务）
@@ -228,11 +237,13 @@ class PanBridgePlugin(Star):
     # ------------------------------------------------------------------
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        """被动识别网盘链接。
+        """被动识别网盘链接，自动解析预览（只预览，不下载/转存）。
 
-        仅当 auto_detect_links 开启、消息含网盘链接、且授权+会话范围
-        检查通过时才处理；其余情况直接返回（不产出消息、不 stop_event），
-        作业插件和其他插件不受影响。
+        授权用户直接发送分享链接（含提取码的完整文案）即触发，无需
+        ``/pb`` 前缀或选择平台。仅当 auto_detect_links 开启、消息含网盘
+        链接、且授权+会话范围检查通过时才处理；解析成功后 ``stop_event``
+        消费该事件（避免作业插件等重复响应同一网盘链接）。未授权/未识别
+        时直接返回（不产出消息、不 stop_event），其余插件不受影响。
         """
         if not self.auto_detect_links:
             return
@@ -249,8 +260,10 @@ class PanBridgePlugin(Star):
         if not decision.allowed:
             # 未授权：静默忽略，绝不拦截事件
             return
+        # 授权通过且命中网盘链接：解析预览，并消费事件防止其他插件重复处理。
         async for r in self._handle_inspect(event, text):
             yield r
+        event.stop_event()
 
     # ------------------------------------------------------------------
     # 解析
@@ -262,7 +275,9 @@ class PanBridgePlugin(Star):
         try:
             info = await self.client.inspect(text)
         except PanBridgeError as exc:
-            yield event.plain_result(f"解析失败：{exc.message}")
+            # 按错误码分类追问，并说明下一步（不泄露上游细节）
+            kind = classify_inspect_error(exc.code)
+            yield event.plain_result(inspect_followup_text(kind, exc.message))
             return
         except Exception as exc:  # noqa: BLE001
             yield event.plain_result(f"连接 PanBridge 服务失败：{exc}")

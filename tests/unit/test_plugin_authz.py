@@ -81,7 +81,8 @@ def test_astrbot_schema_exposes_default_closed_authentication():
     for key in ("admins", "users", "groups", "allowed_bots"):
         assert schema[key]["default"] == []
     assert schema["enable_save"]["default"] is False
-    assert schema["auto_detect_links"]["default"] is False
+    # 被动识别默认开启：授权用户直接发链接即自动预览（仅预览，不下载/转存）
+    assert schema["auto_detect_links"]["default"] is True
     assert schema["api_key"]["secret"] is True
 
 

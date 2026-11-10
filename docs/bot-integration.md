@@ -26,7 +26,8 @@
 
 | 指令 | Capability | 默认 | 说明 |
 |------|-----------|------|------|
-| `/pb <链接>` | `panbridge.inspect` | 白名单用户 | 解析预览 |
+| `直接发链接`（被动识别） | `panbridge.inspect` | 白名单用户 | 自动识别平台、解析并返回简洁预览；**只预览，不下载/转存** |
+| `/pb <链接>` | `panbridge.inspect` | 白名单用户 | 显式解析预览（与直接发链接等价） |
 | `/pb download <链接>` | `panbridge.download` | 白名单用户 | 创建下载任务 |
 | `/pb save <链接>` | `panbridge.save` | **全局关闭**（`enable_save=false`） | 转存到共享账号；权限定义明确前不要开启 |
 | `/pb status [id]` | `panbridge.task.view` | 白名单用户 | 缺省只列**自己的**任务 |
@@ -36,6 +37,13 @@
 | `/pb accounts` | `panbridge.account.list` | **仅管理员** | 列出凭据相关账号 |
 | `/pb providers` | `panbridge.inspect` | 白名单用户 | 平台列表 |
 | `/pb help` | `panbridge.inspect` | 白名单用户 | 帮助 |
+
+**自动预览追问规则**（`astrbot-plugin/utils.py::classify_inspect_error`）：
+
+- 提取码缺失/错误（`INVALID_PASSWORD`）→ 追问「补提取码」；
+- 平台需登录态（`ACTION_REQUIRED`）→ 说明需管理员先登录；
+- 链接不完整（`INVALID_SHARE`）→ 追问「完整链接」；
+- 其余错误 → 简洁失败提示，不泄露上游细节。
 
 ## 3. 可信身份字段
 
@@ -131,7 +139,7 @@ users:  ["course-qq-official:OPENID_DEF456", "course-qq-official:OPENID_GHI789"]
 groups: ["course-qq-official:G_10001"]       # 空 = 仅私聊
 allowed_bots: ["bot-001"]             # 空 = 不限制
 enable_save: false                    # 权限定义明确前保持 false
-auto_detect_links: false              # 直接发链接默认关闭
+auto_detect_links: true               # 直接发链接自动预览（仅预览，默认开启）
 ```
 
 后端侧（环境变量，见 `.env.example`）：`PANBRIDGE_API_KEY`（必配）、
@@ -144,6 +152,10 @@ auto_detect_links: false              # 直接发链接默认关闭
 |------|------|
 | 未授权用户发 `/pb ...` | 统一提示「PanBridge 未对你的账号开放」（不区分原因，防探测） |
 | 未授权/未配置时直接发链接 | **静默忽略**，不产出消息、不拦截事件 |
+| 授权用户发链接，提取码缺失/错误 | 追问补提取码（附写法示例），不编造结果 |
+| 授权用户发链接，平台需登录态 | 说明需管理员先登录，不伪造成功 |
+| 授权用户发链接，链接不完整 | 追问完整链接 |
+| 授权用户发链接，解析成功 | 返回简洁预览；`stop_event` 消费事件，防止其他插件重复响应 |
 | 非网盘链接 / 其他插件命令 | 不响应、不拦截（作业插件等不受影响） |
 | 非创建者查/取消/重试任务 | 「没有这个任务的查看/操作权限」（不泄露任务是否存在） |
 | 普通用户 `/pb login`/`/pb accounts` | 同统一拒绝提示 |
@@ -169,9 +181,11 @@ auto_detect_links: false              # 直接发链接默认关闭
 
 ## 11. 验收边界
 
-**已由合成事件单测覆盖**（`tests/unit/test_plugin_authz.py`）：
+**已由合成事件单测覆盖**（`tests/unit/test_plugin_authz.py`、
+`tests/unit/test_astrbot_plugin.py`）：
 允许/拒绝、跨平台实例同名编号、未授权群、机器人实例过滤、管理员能力、
-save 开关、任务归属、扫码会话归属、被动识别放行条件、插件共存。
+save 开关、任务归属、扫码会话归属、被动识别放行条件、插件共存、解析错误
+分类追问（缺提取码/需账号/链接不完整/其他）、简洁预览（上限与下一步提示）。
 
 **必须真实 QQ 环境验收**（本仓库无法覆盖）：
 
@@ -180,4 +194,7 @@ save 开关、任务归属、扫码会话归属、被动识别放行条件、插
 - 群聊 @ 触发、私聊被动回复窗口、`event.send` 主动推送成功率；
 - 二维码图片经官方平台发送的可用性；
 - 与作业插件在同一实例上的实际共存（消息不互吞）；
-- 被动识别开启后的误触发率（建议保持关闭）。
+- 被动识别**成功解析后 `stop_event` 消费事件**：确认其他插件不再重复响应
+  同一网盘链接，且未命中/未授权消息仍正常放行；
+- 被动识别默认开启后的**误触发率**：若与作业插件存在链接冲突，可将
+  `auto_detect_links` 关回 `false` 回退到仅 `/pb` 入口。

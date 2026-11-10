@@ -11,6 +11,15 @@ from typing import Any
 
 PREFIX = "pb"
 
+# PanBridge 后端稳定的错误码（与 src/panbridge/domain/errors.py 对齐）。
+# 插件侧仅据此分类追问，不硬编码具体网盘细节。
+CODE_INVALID_PASSWORD = "INVALID_PASSWORD"
+CODE_INVALID_SHARE = "INVALID_SHARE"
+CODE_ACTION_REQUIRED = "ACTION_REQUIRED"
+
+#: 预览文件列表的最大展示条数（保持简洁）。
+INSPECT_FILE_LIMIT = 10
+
 # 网盘分享链接（被动识别用；仅在 auto_detect_links 开启且授权通过时使用）
 _LINK_RE = re.compile(
     r"https?://[^\s]+(?:"
@@ -48,20 +57,79 @@ def parse_args(text: str) -> list[str]:
 
 
 def format_inspect(info: dict[str, Any]) -> str:
-    """格式化解析结果。"""
+    """把解析结果格式化为简洁预览（只读，不含下载/转存动作）。
+
+    输出尽可能精炼：平台 + 标题 + 文件列表（上限 INSPECT_FILE_LIMIT 条），
+    末尾附「下一步」提示，引导用户按需走 /pb 高级入口。
+    """
     provider = info.get("provider", "?")
     title = info.get("title", "")
     files = info.get("files", [])
-    lines = [f"平台：{provider}", f"标题：{title or '(无)'}", f"文件数：{len(files)}"]
-    for f in files[:20]:
+    lines = [f"平台：{provider}", f"标题：{title or '(无)'}"]
+    shown = files[:INSPECT_FILE_LIMIT]
+    for f in shown:
         name = f.get("name", "?")
         is_dir = f.get("is_dir")
         size = f.get("size")
         suffix = "/" if is_dir else fmt_size(size)
         lines.append(f"  - {name}{suffix}")
-    if len(files) > 20:
-        lines.append(f"  …（共 {len(files)} 项，仅显示前 20）")
+    total = len(files)
+    if total > INSPECT_FILE_LIMIT:
+        lines.append(f"  …（共 {total} 项，仅显示前 {INSPECT_FILE_LIMIT}）")
+    elif total == 0:
+        lines.append("  （空分享，无文件）")
+    lines.append("")
+    lines.append("如需下载请发送 /pb download <链接>。")
     return "\n".join(lines)
+
+
+def classify_inspect_error(code: str | None) -> str:
+    """把 PanBridge 解析错误码归类为面向用户的追问提示。
+
+    返回稳定分类键，便于 main.py 据以生成「说明下一步」的追问文案：
+
+      - ``need_password``  —— 提取码缺失或错误（INVALID_PASSWORD）；
+      - ``need_account``   —— 该平台解析需要登录态（ACTION_REQUIRED）；
+      - ``invalid_link``   —— 链接不完整或无法识别（INVALID_SHARE / 未知）；
+      - ``unsupported``    —— 平台不支持（UNSUPPORTED_PROVIDER）；
+      - ``error``          —— 其它错误（连接失败、限流等），不追问。
+
+    分类键只用于选择文案，不泄露上游细节。
+    """
+    if code == CODE_INVALID_PASSWORD:
+        return "need_password"
+    if code == CODE_ACTION_REQUIRED:
+        return "need_account"
+    if code == CODE_INVALID_SHARE:
+        return "invalid_link"
+    if code == "UNSUPPORTED_PROVIDER":
+        return "unsupported"
+    return "error"
+
+
+def inspect_followup_text(kind: str, message: str = "") -> str:
+    """根据 classify_inspect_error 的分类生成追问文案（含下一步说明）。"""
+    if kind == "need_password":
+        return (
+            "这个分享需要提取码，请把提取码一起发来，例如：\n"
+            "  <链接> 提取码：xxxx"
+        )
+    if kind == "need_account":
+        return (
+            "该平台的分享解析需要登录账号，暂无法直接预览。\n"
+            "请让管理员先登录对应网盘，或改用其他平台的分享。"
+        )
+    if kind == "invalid_link":
+        return (
+            "没识别到完整的网盘分享链接，请直接发送完整链接，例如：\n"
+            "  https://pan.quark.cn/s/xxxx"
+        )
+    if kind == "unsupported":
+        return "暂不支持这个网盘平台。"
+    # 其它错误：附简短说明，避免暴露上游细节
+    if message:
+        return f"解析失败：{message}"
+    return "解析失败，请稍后重试。"
 
 
 def format_task(task: dict[str, Any]) -> str:

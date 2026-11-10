@@ -159,3 +159,75 @@ def test_fmt_size():
     assert "1.0KB" in fmt_size(1024)
     assert "1.0MB" in fmt_size(1048576)
     assert fmt_size(None) == ""
+
+
+# ----------------------------------------------------------------------
+# 被动识别：错误分类追问与简洁预览（只预览，不下载/转存）
+# ----------------------------------------------------------------------
+
+
+def test_classify_inspect_error_need_password():
+    from utils import classify_inspect_error
+
+    assert classify_inspect_error("INVALID_PASSWORD") == "need_password"
+
+
+def test_classify_inspect_error_need_account():
+    from utils import classify_inspect_error
+
+    assert classify_inspect_error("ACTION_REQUIRED") == "need_account"
+
+
+def test_classify_inspect_error_invalid_link():
+    from utils import classify_inspect_error
+
+    assert classify_inspect_error("INVALID_SHARE") == "invalid_link"
+    # 未知/缺失错误码 → 通用错误，不追问
+    assert classify_inspect_error(None) == "error"
+    assert classify_inspect_error("RATE_LIMITED") == "error"
+
+
+def test_classify_inspect_error_unsupported():
+    from utils import classify_inspect_error
+
+    assert classify_inspect_error("UNSUPPORTED_PROVIDER") == "unsupported"
+
+
+def test_inspect_followup_text_guides_next_step():
+    from utils import inspect_followup_text
+
+    need_pwd = inspect_followup_text("need_password")
+    assert "提取码" in need_pwd
+
+    need_acct = inspect_followup_text("need_account")
+    assert "登录" in need_acct
+
+    bad_link = inspect_followup_text("invalid_link")
+    assert "完整" in bad_link
+
+    # 通用错误：可附简短说明，但不含上游细节
+    generic = inspect_followup_text("error", "boom")
+    assert "boom" in generic
+
+
+def test_format_inspect_is_concise_and_preview_only():
+    """预览应简洁、有上限，且只提示下一步、不触发下载/转存动作。"""
+    from utils import format_inspect
+
+    files = [{"name": f"f{i}.mkv", "is_dir": False, "size": 1024} for i in range(15)]
+    info = {"provider": "quark", "title": "t", "files": files}
+    out = format_inspect(info)
+    # 只展示前 10 项
+    assert "f0.mkv" in out
+    assert "f9.mkv" in out
+    assert "f10.mkv" not in out
+    assert "共 15 项" in out
+    # 末尾提示走 /pb download，而非自动下载
+    assert "/pb download" in out
+
+
+def test_format_inspect_empty_share():
+    from utils import format_inspect
+
+    out = format_inspect({"provider": "quark", "title": "t", "files": []})
+    assert "空分享" in out
