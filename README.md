@@ -206,6 +206,32 @@ uv run panbridge auth logout --provider quark
 
 详见 [astrbot-plugin/README.md](astrbot-plugin/README.md)。
 
+## dsh skill 集成（给 dsh agent 用）
+
+内置 dsh skill（见 [`dsh-skill/`](dsh-skill/)），让 dsh agent 通过命令行
+调用 PanBridge 的 HTTP API 解析/转存/下载网盘分享：
+
+- 挂载：`ln -s "$PWD/dsh-skill" ~/.dsh/skills/panbridge`（已挂载时跳过）。
+- skill 内含零依赖 CLI `scripts/panbridge.py`，只调 `/v1` API，不接触任何 Cookie/Token。
+
+```bash
+# 解析分享（预览文件列表）
+python3 dsh-skill/scripts/panbridge.py inspect 'https://pan.quark.cn/s/xxxx 提取码: abcd'
+# 转存到已登录账号 / 直接下载
+python3 dsh-skill/scripts/panbridge.py save 'https://...'
+python3 dsh-skill/scripts/panbridge.py download 'https://...'
+# 查任务进度 / 产出文件
+python3 dsh-skill/scripts/panbridge.py status <task_id>
+python3 dsh-skill/scripts/panbridge.py files <task_id>
+```
+
+配置 `--base-url` / `--api-key`（或环境变量 `PANBRIDGE_BASE_URL` /
+`PANBRIDGE_API_KEY`、文件 `~/.dsh/panbridge/api_key`）。详见
+[dsh-skill/SKILL.md](dsh-skill/SKILL.md)。
+
+`SKILL.md` 与 Claude Code 的 Agent Skills 格式一致，可复用；要 Codex 也支持，
+把同一脚本包一层 MCP server 暴露即可（三者均支持 MCP）。
+
 ## 阿里云盘（解析无需登录）
 
 阿里云盘的分享解析与文件预览**无需登录**，直接提交分享链接即可：
